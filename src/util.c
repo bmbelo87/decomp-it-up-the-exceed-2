@@ -84,6 +84,7 @@ const char* State_ToString(GameState state) {
         case STATE_INTRO: return "INTRO";
         case STATE_CREDIT: return "CREDIT";
         case STATE_EXSELECT: return "EXSELECT";
+        case STATE_STATION: return "STATION";
 
         case STATE_MENU_ENTER: return "MENU_ENTER";
         case STATE_MENU_INPUT: return "MENU_INPUT";

@@ -5,7 +5,48 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* CStep::LoadStep_STX: uncompress() num buffer de 2 MB (BlockSizeUnCompressed = 2097152). */
+#define STX_DECOMP_MAX 2097152
+
 void Log_Print(const char* fmt, ...);
+uint8_t* Resource_ExtractFromPack(const char* datPath, const char* name, uint32_t* outSize);
+
+/* Exceed2: sem a pasta STEP, os .STX vêm de STEP.DAT (PIU32.EXE 0x40d0d7).
+ * "<raiz>/STEP/X.STX" -> entrada "X.STX" de "<raiz>/STEP.DAT", extraída para
+ * um arquivo temporário (o parser abaixo lê por FILE*). */
+static FILE* stepOpen(const char* path)
+{
+    FILE* f = fopen(path, "rb");
+    if (f) return f;
+
+    char dat[512];
+    strncpy(dat, path, sizeof(dat) - 1);
+    dat[sizeof(dat) - 1] = '\0';
+    char* name = NULL;
+    for (char* p = dat; *p; p++) if (*p == '/' || *p == '\\') name = p;
+    if (!name) return NULL;
+    *name++ = '\0';
+    char stxName[64];
+    strncpy(stxName, name, sizeof(stxName) - 1);
+    stxName[sizeof(stxName) - 1] = '\0';
+    char* dir = NULL;
+    for (char* p = dat; *p; p++) if (*p == '/' || *p == '\\') dir = p;
+    if (dir) strcpy(dir, "/STEP.DAT");
+    else strcpy(dat, "STEP.DAT");
+
+    uint32_t size = 0;
+    uint8_t* buf = Resource_ExtractFromPack(dat, stxName, &size);
+    if (!buf) return NULL;
+
+    char tmp[512];
+    const char* t = getenv("TEMP");
+    snprintf(tmp, sizeof(tmp), "%s/pumpy_step.stx", t ? t : ".");
+    f = fopen(tmp, "wb");
+    if (f) { fwrite(buf, 1, size, f); fclose(f); }
+    free(buf);
+    Log_Print("STX: '%s' lido de '%s' (%u bytes)\n", stxName, dat, size);
+    return fopen(tmp, "rb");
+}
 
 /* Linhas cruas de um bloco -> StepRow (mesma regra de espelho do bloco principal). */
 static StepRow* stepParseRows(const uint8_t* dec, uint32_t n, bool mirror)
@@ -20,6 +61,8 @@ static StepRow* stepParseRows(const uint8_t* dec, uint32_t n, bool mirror)
         else { r[ri].half2.dl = src[5]; r[ri].half2.ul = src[6]; r[ri].half2.cn = src[7];
                r[ri].half2.ur = src[8]; r[ri].half2.dr = src[9]; }
     }
+    /* O original lê só k < NumLines - 1: a última linha fica zerada (memset). */
+    if (n) memset(&r[n - 1], 0, sizeof(StepRow));
     return r;
 }
 
@@ -52,7 +95,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
 {
     memset(song, 0, sizeof(StepSong));
 
-    FILE* f = fopen(path, "rb");
+    FILE* f = stepOpen(path);
     if (!f) return false;
 
     fseek(f, 0, SEEK_END);
@@ -103,7 +146,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
         if (compSize == 0 || compSize > (uint32_t)(fileSize - secOff - STX_SECTION_HEADER))
             continue;
 
-        /* Layout real da seção, conforme Step_ParseFile (0x004068b0):
+        /* Layout real da seção, conforme Step_ParseFile (0x004068b0, PUMPY.EXE; confirmado no CStep::LoadStep_STX do fonte do Exceed):
          *   [0]   int     — nível de dificuldade
          *   [4]   50 ints — quantos blocos cada grupo tem
          *   [204] os blocos, cada um [4 bytes tamanho][dados zlib]
@@ -114,7 +157,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
         memcpy(blockCounts, secHeader + 4, sizeof(blockCounts));
         int totalBlocks = 0;
         for (int bi = 0; bi < 50; bi++) {
-            if (blockCounts[bi] > 64) { totalBlocks = 0; break; }  /* header suspeito */
+            if (blockCounts[bi] > STEP_MAX_BLOCK_X) { totalBlocks = 0; break; }  /* header suspeito */
             totalBlocks += (int)blockCounts[bi];
         }
         if (totalBlocks < 1) totalBlocks = 1;
@@ -122,14 +165,14 @@ bool Step_LoadSong(const char* path, StepSong* song)
         /* Division: cada contagem não-nula do header é uma página e os blocos
          * dela são ramos. Só vira "páginas" se alguma página tiver > 1 bloco;
          * senão os blocos continuam sendo mudanças de BPM em sequência. */
-        int blkPage[64], blkBranch[64], divPages = 0;
+        int blkPage[STEP_MAX_BLOCK_Y * STEP_MAX_BLOCK_X], blkBranch[STEP_MAX_BLOCK_Y * STEP_MAX_BLOCK_X], divPages = 0;
         bool isDiv = false;
         {
             int bi = 0;
-            for (int g = 0; g < 50 && bi < 64; g++) {
+            for (int g = 0; g < 50 && bi < STEP_MAX_BLOCK_Y * STEP_MAX_BLOCK_X; g++) {
                 if (!blockCounts[g]) continue;
                 if (blockCounts[g] > 1) isDiv = true;
-                for (uint32_t k = 0; k < blockCounts[g] && bi < 64; k++) {
+                for (uint32_t k = 0; k < blockCounts[g] && bi < STEP_MAX_BLOCK_Y * STEP_MAX_BLOCK_X; k++) {
                     blkPage[bi] = divPages; blkBranch[bi] = (int)k; bi++;
                 }
                 divPages++;
@@ -149,10 +192,10 @@ bool Step_LoadSong(const char* path, StepSong* song)
             continue;
         }
 
-        uint8_t* decompBuf = (uint8_t*)malloc(65536);
+        uint8_t* decompBuf = (uint8_t*)malloc(STX_DECOMP_MAX);
         if (!decompBuf) { free(compData); continue; }
 
-        uint32_t decompLen = 65536;
+        uint32_t decompLen = STX_DECOMP_MAX;
         uint32_t inConsumed = 0;
         int ret = zlib_decompress_ex(compData, compSize, decompBuf, &decompLen, &inConsumed);
         free(compData);
@@ -241,6 +284,9 @@ bool Step_LoadSong(const char* path, StepSong* song)
             }
         }
 
+        /* O original lê só k < NumLines - 1: a última linha do bloco fica zerada. */
+        memset(&chart->rows[rowCount - 1], 0, sizeof(StepRow));
+
         if (isDiv) {
             chart->divPageCount = divPages;
             chart->divPages[0].rowStart = 0;
@@ -279,9 +325,9 @@ bool Step_LoadSong(const char* path, StepSong* song)
                 if (fread(bComp, 1, bSize, f) != bSize) { free(bComp); break; }
                 blockPos += bSize;
 
-                uint8_t* bDec = (uint8_t*)malloc(65536);
+                uint8_t* bDec = (uint8_t*)malloc(STX_DECOMP_MAX);
                 if (!bDec) { free(bComp); break; }
-                uint32_t bdl = 65536, bic = 0;
+                uint32_t bdl = STX_DECOMP_MAX, bic = 0;
                 int bret = zlib_decompress_ex(bComp, bSize, bDec, &bdl, &bic);
                 free(bComp);
                 if (bret != 0 || bdl < STX_GRID_OFFSET + STX_ROW_SIZE) { free(bDec); break; }
@@ -310,11 +356,11 @@ bool Step_LoadSong(const char* path, StepSong* song)
                     continue;
                 }
 
-                if (isDiv && blk < 64) {
+                if (isDiv && blk < STEP_MAX_BLOCK_Y * STEP_MAX_BLOCK_X) {
                     int pg = blkPage[blk], br = blkBranch[blk];
                     if (br > 0) {
                         /* Ramo alternativo: guardado, não entra no chart tocável. */
-                        if (br < 10 && pg < STEP_DIV_MAX_PAGES) {
+                        if (br < STEP_MAX_BLOCK_X && pg < STEP_DIV_MAX_PAGES) {
                             chart->divPages[pg].branchRows[br] = stepParseRows(bDec, sRowCount, mirror);
                             memcpy(chart->divPages[pg].cond[br], bDec + 16, sizeof(chart->divPages[pg].cond[br]));
                             memcpy(&chart->divPages[pg].speed[br], bDec + 96, 4);
@@ -341,7 +387,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
                 chart->hasSplit = true;
 
                 int segIdx = chart->segmentCount;
-                if (segIdx < 8) {
+                if (segIdx < STEP_MAX_BLOCK_Y) {
                     chart->segments[segIdx].bpm = sBpm;
                     chart->segments[segIdx].beatPerMeasure = sBpmM;
                     chart->segments[segIdx].beatSplit = sBpmS;
@@ -377,6 +423,8 @@ bool Step_LoadSong(const char* path, StepSong* song)
                         dst->half2.dr = src[9];
                     }
                 }
+                /* Última linha do bloco zerada, como no original (k < NumLines - 1). */
+                memset(&chart->rows[rowCount + sRowCount - 1], 0, sizeof(StepRow));
                 rowCount += sRowCount;
                 chart->rowCount = rowCount;
                 free(bDec);

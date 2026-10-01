@@ -47,6 +47,32 @@ static void Window_UpdateViewport(void) {
     glLoadIdentity();
 }
 
+/* Tela cheia EXCLUSIVA: troca o modo de vídeo do monitor para a RESOLUTION
+ * escolhida (640x480 = como o original rodava). O original abria em tela cheia
+ * na resolução do jogo; o FULLSCREEN_DESKTOP (janela sem borda na resolução da
+ * área de trabalho) fica só como reserva se o monitor não aceitar o modo. */
+static void Window_SetFullscreen(bool fs) {
+    if (!g_win) return;
+    if (!fs) { SDL_SetWindowFullscreen(g_win, 0); return; }
+
+    int w, h;
+    Window_GetResolution(g_game.gfxResIdx, &w, &h);
+    SDL_DisplayMode want, got;
+    memset(&want, 0, sizeof(want));
+    want.w = w; want.h = h; want.refresh_rate = 60;
+    int disp = SDL_GetWindowDisplayIndex(g_win);
+    if (disp < 0) disp = 0;
+    if (SDL_GetClosestDisplayMode(disp, &want, &got) &&
+        SDL_SetWindowDisplayMode(g_win, &got) == 0 &&
+        SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN) == 0) {
+        Log_Print("Window: fullscreen exclusivo %dx%d @ %d Hz (pedido %dx%d)\n",
+                  got.w, got.h, got.refresh_rate, w, h);
+        return;
+    }
+    Log_Print("Window: modo %dx%d indisponivel (%s), usando fullscreen desktop\n", w, h, SDL_GetError());
+    SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN_DESKTOP);
+}
+
 bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) {
     (void)hInstance;
 
@@ -72,12 +98,12 @@ bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) 
     /* Compatibility profile is only valid for GL >= 3.2 on some drivers; retry
      * without it if creation fails. */
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
-    g_win = SDL_CreateWindow("PUMP IT UP - Pumpy Reconstructed",
+    g_win = SDL_CreateWindow("Pump it Up: Exceed 2",
                               SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                               width, height, flags);
     if (!g_win) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, 0);
-        g_win = SDL_CreateWindow("PUMP IT UP - Pumpy Reconstructed",
+        g_win = SDL_CreateWindow("Pump it Up: Exceed 2",
                                  SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                  width, height, flags);
     }
@@ -99,7 +125,8 @@ bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) 
     SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0);
 
     if (fullscreen)
-        SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        Window_SetFullscreen(true);
+        /* SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN_DESKTOP); */
 
     /* screenWidth/Height são a resolução LÓGICA, não o tamanho da janela:
      * várias telas desenham em cima delas (Font_DrawStringCentered com
@@ -158,7 +185,8 @@ void Window_GetResolution(int idx, int* w, int* h) {
 /* Aplica tela cheia, tamanho da janela, vsync, proporção e filtro na hora. */
 void Window_ApplyGraphics(void) {
     if (!g_win) return;
-    SDL_SetWindowFullscreen(g_win, g_game.isFullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    /* SDL_SetWindowFullscreen(g_win, g_game.isFullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0); */
+    Window_SetFullscreen(g_game.isFullscreen);   /* exclusivo: RESOLUTION vira o modo de vídeo */
     if (!g_game.isFullscreen) {
         int w, h;
         Window_GetResolution(g_game.gfxResIdx, &w, &h);
@@ -177,8 +205,9 @@ void Window_ApplyGraphics(void) {
 void Window_ToggleFullscreen(void) {
     if (!g_win) return;
     g_game.isFullscreen = !g_game.isFullscreen;
-    Uint32 fsflag = g_game.isFullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
-    SDL_SetWindowFullscreen(g_win, fsflag);
+    /* Uint32 fsflag = g_game.isFullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+    SDL_SetWindowFullscreen(g_win, fsflag); */
+    Window_SetFullscreen(g_game.isFullscreen);
     Window_UpdateViewport();
     Log_Print("Window: %s\n", g_game.isFullscreen ? "fullscreen" : "windowed");
 }

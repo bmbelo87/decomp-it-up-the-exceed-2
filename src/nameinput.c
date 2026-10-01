@@ -66,28 +66,21 @@ static int clampChar(int c)
 }
 
 /* ── ranking no eeprom.bin ─────────────────────────────────────────────── */
-static void eepPath(char* out, size_t n) { snprintf(out, n, "%s/eeprom.bin", g_game.currentDirectory); }
+/* static void eepPath(char* out, size_t n) { snprintf(out, n, "%s/PIUEXCEED2.INI", g_game.currentDirectory); } */   /* DESATIVADO: eeprom_x2.c */
 
+/* Exceed2: a imagem é a do eeprom_x2.c (PIUEXCEED2.INI), compartilhada com a
+ * Select (contagem de jogos, Canon-D) para uma gravação não apagar a outra.
+ * As versões anteriores liam/gravavam o arquivo direto (eeprom.bin). */
 static bool eepLoad(void)
 {
-    char path[MAX_PATH];
-    eepPath(path, sizeof(path));
-    memset(g_eep, 0, sizeof(g_eep));
-    FILE* f = fopen(path, "rb");
-    if (!f) { Log_Print("NAMEINPUT: '%s' não abriu\n", path); return false; }
-    size_t n = fread(g_eep, 1, sizeof(g_eep), f);
-    fclose(f);
-    return n == sizeof(g_eep);
+    memcpy(g_eep, Eeprom2_Data(), sizeof(g_eep));
+    return true;
 }
 
 static void eepSave(void)
 {
-    char path[MAX_PATH];
-    eepPath(path, sizeof(path));
-    FILE* f = fopen(path, "wb");
-    if (!f) { Log_Print("NAMEINPUT: não gravou '%s'\n", path); return; }
-    fwrite(g_eep, 1, sizeof(g_eep), f);
-    fclose(f);
+    memcpy(Eeprom2_Data(), g_eep, sizeof(g_eep));
+    Eeprom2_Save();
 }
 
 static uint32_t hsValue(int i)

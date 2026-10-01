@@ -1,5 +1,6 @@
 #include "pumpy.h"
 #include "vsl.h"
+#include "bga.h"
 
 #ifndef GL_BGR_EXT
 #define GL_BGR_EXT 0x80E0  /* dump de debug; alguns gl.h (Linux) so definem GL_BGR */
@@ -481,6 +482,52 @@ static float g_judgeDisplayTimer[2];
 static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
 static int g_judgeFrame[2]; // frame counter 25->0 for judge animation
+/* Exceed2 (PIU32.EXE 0x407400): contador do julgamento por jogador ([+0x1D4]),
+ * zerado a cada julgamento novo e +1 por quadro; cena desenhada enquanto < 50.
+ * O julgamento e o combo são cenas do BGA/00.DAT (BGA3, [0x484FD8]). */
+static int g_exJudgeCnt[2];
+static int g_exJudgeBga = -1;   /* índice em g_game.bgaPics do 00.BGA, -1 = sem */
+
+/* Exceed2 (PIU32.EXE 0x4043A1..0x404655): setas das notas vêm do BGA\SKIN0X.DAT.
+ * [0x484F7C] & 0x10000 -> SKIN02, & 0x20000 -> SKIN01, senão SKIN00.
+ * Por painel (DL UL C UR DR): skinN.spr = nota (6 quadros), skinN_l1 = cabeça do
+ * hold, skinN_l2 = corpo, skinN_l3 = ponta. Ajuste em X por skin e painel em
+ * [0x46AFF0..0x46B000], aplicado em 0x406AEC (índice = painel). -1 = sem skin:
+ * volta para o ARROW54X / ARROWETC do 00.DAT. */
+static int   g_skinTap[5] = { -1, -1, -1, -1, -1 };
+static int   g_skinL1[5]  = { -1, -1, -1, -1, -1 };
+static int   g_skinL2[5]  = { -1, -1, -1, -1, -1 };
+static int   g_skinL3[5]  = { -1, -1, -1, -1, -1 };
+static float g_skinOffX[5];
+
+static void exLoadSkin(void)
+{
+    static const float k_off[3][5] = {
+        { 2.0f, 1.0f, 0.0f, 0.0f, 0.0f },    /* SKIN00: 0x4044D4 (2, 1, 0, 0, 0) */
+        { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f },    /* SKIN01: 0x4044AF */
+        { 3.0f, 3.0f, 1.0f, -3.0f, -3.0f },  /* SKIN02: 0x4043C0 */
+    };
+    for (int k = 0; k < 5; k++) g_skinTap[k] = g_skinL1[k] = g_skinL2[k] = g_skinL3[k] = -1;
+    unsigned fl = ExSelect_GetFlags();
+    int sk = (fl & 0x10000u) ? 2 : (fl & 0x20000u) ? 1 : 0;
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/BGA/SKIN%02d.DAT", g_game.currentDirectory, sk);
+    if (!RES_Open(path)) { Log_Print("GP: skin '%s' não abriu\n", path); return; }
+    for (int k = 0; k < 5; k++) {
+        char nm[32];
+        int* dst[4] = { &g_skinTap[k], &g_skinL1[k], &g_skinL2[k], &g_skinL3[k] };
+        static const char* suf[4] = { "", "_l1", "_l2", "_l3" };
+        for (int j = 0; j < 4; j++) {
+            snprintf(nm, sizeof(nm), "skin%d%s.spr", k + 1, suf[j]);
+            int start = g_game.sprTileCount;
+            SPR_LoadSPR(nm, NULL, NULL, NULL);
+            *dst[j] = (g_game.sprTileCount > start) ? start : -1;
+        }
+        g_skinOffX[k] = k_off[sk][k];
+    }
+    RES_Close();
+    Log_Print("GP: skin SKIN%02d carregada (nota DL=%d)\n", sk, g_skinTap[0]);
+}
 static int g_hitTimer[2][MAX_PANELS]; // hit flash animation timer (p1)
 static int g_glowTimer[2][MAX_PANELS];    // glow aditivo: apenas PERFECT/GREAT
 static int g_p1FlashTimer[2][MAX_PANELS]; // tile p1: zoom+fade ao pressionar
@@ -878,7 +925,7 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
-    g_judgeFrame[player] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
+    g_judgeFrame[player] = 25; g_exJudgeCnt[player] = 0; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
     int sc = 0, cb = g_game.stats.combo[player];
     switch (jt) {
         case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
@@ -1083,7 +1130,7 @@ static void applyRowJudgment(int p, JudgeType jt)
     }
     g_judgeDisplayType[p] = jt;
     g_judgeDisplayTimer[p] = 0.6f;
-    g_judgeFrame[p] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
+    g_judgeFrame[p] = 25; g_exJudgeCnt[p] = 0; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
     g_judgeDisplayCombo[p] = (jt == JT_MISS) ? (int)g_game.stats.missCombo[p] : (int)g_game.stats.combo[p];
     applyLife(p, jt);
     if (g_game.stats.combo[p] > g_game.stats.maxCombo[p])
@@ -1271,7 +1318,7 @@ static void processInput(int player)
                     }
                     g_judgeDisplayType[player] = pjt;
                     g_judgeDisplayTimer[player] = 0.6f;
-                    g_judgeFrame[player] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (pjt == JT_GREAT || pjt == JT_PERFECT) ? 40 : 25 */
+                    g_judgeFrame[player] = 25; g_exJudgeCnt[player] = 0; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (pjt == JT_GREAT || pjt == JT_PERFECT) ? 40 : 25 */
                     { int sc = 0, cb = g_game.stats.combo[player];
                       int receptorY = 38;
                       switch (pjt) {
@@ -1335,7 +1382,7 @@ static void processInput(int player)
         }
         g_judgeDisplayType[player] = jt;
         g_judgeDisplayTimer[player] = 0.6f;
-        g_judgeFrame[player] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
+        g_judgeFrame[player] = 25; g_exJudgeCnt[player] = 0; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
         { int sc = 0, cb = g_game.stats.combo[player];
           int receptorY = 38;
           switch (jt) {
@@ -1438,7 +1485,7 @@ static void processAutoplay(void)
         {
             g_judgeDisplayType[p] = JT_PERFECT;
             g_judgeDisplayTimer[p] = 0.6f;
-            g_judgeFrame[p] = 25; /* 0x40dd9a (era 40) */
+            g_judgeFrame[p] = 25; g_exJudgeCnt[p] = 0; /* 0x40dd9a (era 40) */
             g_judgeDisplayCombo[p] = ++g_game.stats.combo[p];
             g_game.stats.missCombo[p] = 0;
             g_game.stats.score[p] += 1000;
@@ -1575,11 +1622,19 @@ static void processHolds(void)
                 }
                 else
                 {
+                    /* O original julga por LINHA, não por painel (JudgeStep: cada nota
+                     * tratada ganha +128 e a linha só vira JUDGE_END — um julgamento,
+                     * +1 combo — quando todas foram tratadas). Antes só um tap em outro
+                     * painel segurava o julgamento; corpos B/T de outros holds na mesma
+                     * linha não, e 2-3 holds juntos davam +2/+3 por linha — com
+                     * BeatSplit alto o combo disparava. Agora o último painel da linha
+                     * é quem julga; se sobrar hold solto, processMisses dá o MISS. */
                     int hasUnjudgedTap = false;
                     for (int op = 0; op < panCount; op++) {
                         if (op == panel) continue;
                         uint8_t ov = isHD ? getNoteHD(&g_chart->rows[ri], op) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], op) : getPanelValue(&g_chart->rows[ri], op, p));
-                        if (ov && ov != NT_HOLD_B && ov != NT_HOLD_T) { hasUnjudgedTap = true; break; }
+                        /* if (ov && ov != NT_HOLD_B && ov != NT_HOLD_T) { hasUnjudgedTap = true; break; } */
+                        if (ov) { hasUnjudgedTap = true; break; }
                     }
                     if (isHD) clearHDPanel(&g_chart->rows[ri], panel);
                     else if (dnAP) clearDNPanel(&g_chart->rows[ri], panel);
@@ -1668,7 +1723,7 @@ static void processMisses(void)
             g_game.stats.missCombo[p] += missCount;
             g_judgeDisplayType[p] = JT_MISS;
             g_judgeDisplayTimer[p] = 0.6f;
-            g_judgeFrame[p] = 25;
+            g_judgeFrame[p] = 25; g_exJudgeCnt[p] = 0;
             g_judgeDisplayCombo[p] = g_game.stats.missCombo[p];
             for (int m = 0; m < missCount; m++)
                 applyLife(p, JT_MISS); /* penalidade por linha perdida */
@@ -1735,6 +1790,16 @@ void Gameplay_Start(int songId)
         char datPath[MAX_PATH];
         snprintf(datPath, sizeof(datPath), "%s/BGA/00.DAT", g_game.currentDirectory);
         Resource_LoadFontAndArrows(datPath);
+    }
+    /* Exceed2 0x405960: BGA/00.DAT também é carregado como BGA ([0x484FD8]);
+     * julgamento/combo são cenas dele. Fica como mais um BGA depois do da música. */
+    g_exJudgeBga = -1;
+    memset(g_exJudgeCnt, 0, sizeof(g_exJudgeCnt));
+    if (g_exceedSongIds) exLoadSkin();   /* Exceed2 0x404350: SKIN0X.DAT */
+    if (g_exceedSongIds && Resource_LoadBGAByName("00")) {
+        int bi = g_game.bgaPicCount - 1;
+        if (g_game.bgaPics[bi].version == 3 && g_game.bgaPics[bi].sceneCount > 0) g_exJudgeBga = bi;
+        Log_Print("GP: 00.BGA como BGA %d (v%d, %d cenas)\n", bi, g_game.bgaPics[bi].version, g_game.bgaPics[bi].sceneCount);
     }
 
     SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
@@ -2052,6 +2117,7 @@ void Gameplay_Update(float dt)
             g_judgeDisplayTimer[p] -= dt;
         if (g_judgeFrame[p] > 0)
             g_judgeFrame[p]--;
+        if (g_exJudgeCnt[p] < 1000) g_exJudgeCnt[p]++;   /* 0x407439 */
         for (int pan = 0; pan < MAX_PANELS; pan++) {
             if (g_hitTimer[p][pan] > 0)
                 g_hitTimer[p][pan]--;
@@ -2728,6 +2794,15 @@ void Gameplay_Render(void)
                         float sw   = (float)g_game.sprTiles[idx].srcW;
                         float sprH = (float)g_game.sprTiles[idx].srcH;
                         float offX = isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx];
+                        /* Exceed2: corpo pela skin (skinN_l2), no centro da nota */
+                        if (!isHalfDouble && arrowIdx < 5 && g_skinL2[arrowIdx] >= 0) {
+                            float aw = (g_fontArrow542 >= 0) ? (float)g_game.sprTiles[g_fontArrow542].srcW : 54.0f;
+                            idx  = g_skinL2[arrowIdx];
+                            sw   = (float)g_game.sprTiles[idx].srcW;
+                            sprH = (float)g_game.sprTiles[idx].srcH;
+                            offX = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
+                        }
+                        (void)sprH;
                         float bodyAlpha = 1.0f;
                         if (g_game.cmdVanish[p]) {
                             /* Thresholds derivados do PUMPY.EXE (Ghidra):
@@ -2791,9 +2866,16 @@ void Gameplay_Render(void)
                 if (y2 <= y1) continue;
                 int arrowIdx = isDoubleOrNightmare ? (panel % 5) : panel;
                 int idx = g_fontArrowETC + (isHalfDouble ? kHDBodyTile[panel] : kBodyTile[arrowIdx]);
+                float offXs = 0.0f;
+                bool useSkin = (!isHalfDouble && arrowIdx < 5 && g_skinL2[arrowIdx] >= 0);
+                if (useSkin) idx = g_skinL2[arrowIdx];   /* Exceed2: corpo pela skin */
                 SPRTileDef* bt = &g_game.sprTiles[idx];
                 float sw = (float)bt->srcW;
-                float offX = isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx];
+                if (useSkin) {
+                    float aw = (g_fontArrow542 >= 0) ? (float)g_game.sprTiles[g_fontArrow542].srcW : 54.0f;
+                    offXs = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
+                }
+                float offX = useSkin ? offXs : (isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx]);
                 int btW = Texture_GetWidth(bt->texId); if (btW <= 0) btW = 256;
                 int btH = Texture_GetHeight(bt->texId); if (btH <= 0) btH = 256;
                 /* mesma faixa de UV do Pass 0, para o corpo não mudar de cara no fim */
@@ -2833,6 +2915,16 @@ void Gameplay_Render(void)
                 int idx = g_fontArrowETC + (isHalfDouble ? kHDTailTile[panel] : kTailTile[arrowIdx]);
                 float sw = (float)g_game.sprTiles[idx].srcW;
                 float sh = (float)g_game.sprTiles[idx].srcH;
+                /* Exceed2: ponta pela skin (skinN_l3), no centro da nota.
+                 * posX + sw/2 abaixo fica = posX + aw/2 + ajuste da skin. */
+                float tailSkinDX = 0.0f;
+                if (!isHalfDouble && arrowIdx < 5 && g_skinL3[arrowIdx] >= 0) {
+                    float aw = (g_fontArrow542 >= 0) ? (float)g_game.sprTiles[g_fontArrow542].srcW : 54.0f;
+                    idx = g_skinL3[arrowIdx];
+                    sw = (float)g_game.sprTiles[idx].srcW;
+                    sh = (float)g_game.sprTiles[idx].srcH;
+                    tailSkinDX = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
+                }
                 float tailAlpha = 1.0f;
                 if (g_game.cmdVanish[p]) {
                     float fade = (y - 122.0f) / 84.0f;
@@ -2857,7 +2949,7 @@ void Gameplay_Render(void)
                     if (g_holdRows[p][panel] >= 0 && headY < xmY0) headY = xmY0;  /* segurado */
                     tailDX = XM_DXP(panel, headY);
                 }
-                Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f + tailDX, y, sw, sh, tailAlpha);
+                Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f + tailDX + tailSkinDX, y, sw, sh, tailAlpha);
             }
         }
         // Pass 2: Taps/HoldHeads
@@ -2918,6 +3010,19 @@ void Gameplay_Render(void)
                         float fade = (y - 122.0f) / 84.0f;
                         noteAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
                     }
+                    /* Exceed2: nota/cabeça do hold pela skin (skinN / skinN_l1),
+                     * centrada onde ficava a seta do ARROW54X + ajuste da skin */
+                    int skinBase = -1;
+                    if (nv != 2 && nv != 3 && arrowGroup >= 0 && arrowGroup < 5)
+                        skinBase = (val == NT_HOLD_H) ? g_skinL1[arrowGroup] : g_skinTap[arrowGroup];
+                    if (skinBase >= 0) {
+                        int sIdx = skinBase + af;
+                        if (sIdx >= g_game.sprTileCount) sIdx = skinBase;
+                        float ssw = (float)g_game.sprTiles[sIdx].srcW;
+                        float ssh = (float)g_game.sprTiles[sIdx].srcH;
+                        Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f + g_skinOffX[arrowGroup] + XM_DXP(panel, y),
+                                          y, ssw, ssh, noteAlpha);
+                    } else
                     Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f + XM_DXP(panel, y), y, sw, sh, noteAlpha);
                 }
             }
@@ -2940,6 +3045,13 @@ void Gameplay_Render(void)
             float sw = (float)g_game.sprTiles[aidx].srcW;
             float sh = (float)g_game.sprTiles[aidx].srcH;
             float y = (float)(receptorY + rh2 / 2);
+            /* Exceed2: cabeça presa no receptor pela skin (skinN_l1) */
+            if (arrowGroup >= 0 && arrowGroup < 5 && g_skinL1[arrowGroup] >= 0) {
+                int sIdx = g_skinL1[arrowGroup] + arrowAnimFrame();
+                if (sIdx >= g_game.sprTileCount) sIdx = g_skinL1[arrowGroup];
+                Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f + g_skinOffX[arrowGroup] + XM_DXP(panel, y), y,
+                                  (float)g_game.sprTiles[sIdx].srcW, (float)g_game.sprTiles[sIdx].srcH, 1.0f);
+            } else
             Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f + XM_DXP(panel, y), y, sw, sh, 1.0f);
         }
         #undef XM_DX
@@ -3044,6 +3156,46 @@ void Gameplay_Render(void)
         }
 
         // Judge + combo display (animacao 3 fases — original FUN_0040dd70)
+        /* Exceed2 (PIU32.EXE 0x407400): julgamento e combo como cenas do 00.BGA.
+         * Nome da cena pelo tipo: PERFECT..MISS (1P), PER-2P..MIS-2P (2P) ou
+         * PER-D..MIS-D (double, [0x484F7C] & 0xA80), no quadro início + contador
+         * enquanto o contador < 50. Combo (+0x160) >= 4 em branco; combo de MISS
+         * (+0x168) >= 4 em (1, 0.3, 0.3) e tem prioridade. Os dígitos trocam a
+         * textura dos slots 13 (unidade), 12, 11 e 10 pelas dos slots 14..23
+         * (0.SPR..9.SPR); depois COMBO + 4DIGIT (>= 1000) ou 3DIGIT. */
+        if (g_exJudgeBga >= 0 && g_judgeDisplayType[p] != JT_NONE) {
+            static const char* k_j1P[6] = { NULL, "PERFECT", "GREAT", "GOOD", "BAD", "MISS" };
+            static const char* k_j2P[6] = { NULL, "PER-2P", "GRE-2P", "GOO-2P", "BAD-2P", "MIS-2P" };
+            static const char* k_jD[6]  = { NULL, "PER-D", "GRE-D", "GOO-D", "BAD-D", "MIS-D" };
+            int cnt = g_exJudgeCnt[p];
+            JudgeType jt = g_judgeDisplayType[p];
+            if (cnt < 50 && jt > JT_NONE && jt <= JT_MISS) {
+                const char* jn = isDoubleOrNightmare ? k_jD[jt] : (p == 0 ? k_j1P[jt] : k_j2P[jt]);
+                BGA_ScenePlayAt(g_exJudgeBga, jn, cnt);                         /* 0x4074FE */
+
+                int combo = (int)g_game.stats.combo[p];
+                int miss  = (int)g_game.stats.missCombo[p];
+                if (combo >= 4 || miss >= 4) {
+                    int val = 0;
+                    if (combo >= 4) { BGA_SetColor4(g_exJudgeBga, 1.0f, 1.0f, 1.0f, 1.0f); val = combo; }
+                    if (miss >= 4)  { BGA_SetColor4(g_exJudgeBga, 1.0f, 0.3f, 0.3f, 1.0f); val = miss; }
+                    BGALayerSrc dig[10];
+                    for (int d = 0; d < 10; d++) BGA_GetLayerSrc(g_exJudgeBga, 14 + d, &dig[d]);
+                    int v = val;
+                    for (int slot = 13; slot >= 10; slot--) {                    /* 0x40761F */
+                        BGA_SetLayerSrc(g_exJudgeBga, slot, &dig[v % 10]);
+                        v /= 10;
+                    }
+                    const char* cn; const char* dn;
+                    if (isDoubleOrNightmare) { cn = "COM-D"; dn = (val >= 1000) ? "D-4DIGIT" : "D-3DIGIT"; }
+                    else if (p == 0)         { cn = "COMBO"; dn = (val >= 1000) ? "1P-4DIGIT" : "1P-3DIGIT"; }
+                    else                     { cn = "COM-2P"; dn = (val >= 1000) ? "2P-4DIGIT" : "2P-3DIGIT"; }
+                    BGA_ScenePlayAt(g_exJudgeBga, cn, cnt);
+                    BGA_ScenePlayAt(g_exJudgeBga, dn, cnt);
+                    BGA_SetColor4(g_exJudgeBga, 1.0f, 1.0f, 1.0f, 1.0f);       /* 0x407724 */
+                }
+            }
+        } else
         if (g_judgeDisplayTimer[p] > 0)
         {
             JudgeType jt = g_judgeDisplayType[p];
@@ -3577,13 +3729,21 @@ void Gameplay_Render(void)
             {
                 int ht = g_glowTimer[pe][pan];
                 if (ht > 0) {
-                    float ga = (float)ht / 24.0f;
+                    /* exceed.exe 0x406D2D..0x406E66: cor (1,1,1, 1 - t/24) e escala 1 + t/100
+                     * (1.0 -> 1.24) no arrowf e na seta aditiva, uma vez cada. */
+                    /* float ga = (float)ht / 24.0f; */
+                    float ga  = eAlpha;
+                    float gsc = 1.0f + ef / 100.0f;
+                    (void)ht;
 
-                    /* Camada 2: mesma seta aditiva 3x — acumula para ficar bem branca */
+                    /* Camada 2: mesma seta aditiva, uma vez, crescendo */
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw * gsc, sh * gsc, ga);
+                    /* Antes: 3x sem escala (acumulava branco)
                     Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
                     Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
                     Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
+                    */
 
                     /* Camada 3: arrowf.spr aditivo — mesma proporção inicial do HitKey (0.8x), sem crescer.
                      * Posição usa o mesmo offset p1OffX do HitKey (centralizado no receptor). */
@@ -3608,9 +3768,25 @@ void Gameplay_Render(void)
                             const float* afOffX = (isHalfDouble || isDoubleOrNightmare) ? afOffXHD : afOffXReg;
                             int afPan = isDoubleOrNightmare ? (pan % 5) : (isHalfDouble ? arrowType : pan);
                             float cx = expPosX[pan] + afOffX[afPan] + fw / 2.0f;
-                            /* Escala 1.0f — tamanho natural do sprite, sem crescer */
-                            float gsc = 1.0f;
+                            /* Escala 1 + t/100 (gsc acima), centrada — 0x406D6D..0x406DD9 */
                             Sprite_DrawTileUV(fSpr, cx, erY, fw * gsc, fh * gsc, ga);
+                        }
+                    }
+
+                    /* Exceed2 0x403681..0x403847: spark.spr aditivo no painel,
+                     * quadro = t/3 enquanto t < 15 (5 quadros de 256x256), com o
+                     * mesmo temporizador da explosão. Centro no painel: o original
+                     * posiciona por Translate (-90 + 49*k, -95) na matriz do
+                     * receptor — aproximado aqui pelo centro da seta. */
+                    if (g_fontSpark >= 0 && ef < 15.0f) {
+                        int sf = (int)ef / 3;
+                        int sCnt = sprTileCount(g_fontSpark);
+                        if (sCnt > 0 && sf < sCnt && g_fontSpark + sf < g_game.sprTileCount) {
+                            int sIdx = g_fontSpark + sf;
+                            float spw = (float)g_game.sprTiles[sIdx].srcW;
+                            float sph = (float)g_game.sprTiles[sIdx].srcH;
+                            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                            Sprite_DrawTileUV(sIdx, expPosX[pan] + sw / 2.0f, erY, spw, sph, 1.0f);
                         }
                     }
 

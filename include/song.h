@@ -13,9 +13,9 @@
 #endif
 #endif
 
-#define MAX_SONGS 128
+#define MAX_SONGS 160          /* Exceed2: 138 músicas (era 128) */
 #define MAX_MODES 16
-#define MAX_SONGS_PER_MODE 128
+#define MAX_SONGS_PER_MODE 160 /* era 128 */
 
 typedef struct {
     int id;

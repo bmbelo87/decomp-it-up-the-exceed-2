@@ -423,6 +423,10 @@ void Texture_ApplyFilterAll(void) {
     for (int i = 0; i < MAX_TEXTURES; i++) {
         if (!g_game.textures[i].inUse) continue;
         glBindTexture(GL_TEXTURE_2D, g_game.textures[i].id);
+        if (g_game.textures[i].hd)   /* HD tem mipmaps (Texture_HDMipmaps) */
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            g_game.gfxTexFilter ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR);
+        else
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, flt);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, flt);
     }
@@ -540,6 +544,177 @@ static bool Texture_LoadFile(const char* path, uint8_t** dataOut, int* wOut, int
     return false;
 }
 
+/* ---------------------------------------------------------- Texturas HD --
+ * Recurso do port, fora do original. Desligado por padrão: só age se existir
+ * a pasta HD\ (substituição) ou HD_DUMP\ (extração) na pasta do jogo.
+ *
+ * Chave: <NOME>_<CRC32 dos bytes do arquivo original>.png — 237 nomes se
+ * repetem entre os .DAT com conteúdo diferente, então só o nome não basta.
+ *   HD_DUMP\ : cada textura carregada é gravada lá (RGBA, antes do color key).
+ *   HD\      : se existir o arquivo com a mesma chave, com tamanho múltiplo
+ *              inteiro do original (2x, 4x...), ele é usado no lugar. width/
+ *              height continuam os LÓGICOS do original: todo o código que usa
+ *              coordenadas de atlas em pixels (ST02 144..158, DEC00 168/256...)
+ *              segue igual. */
+static uint32_t g_crcTab[256];
+static uint32_t hdCrc32(const uint8_t* p, size_t n, uint32_t c) {
+    if (!g_crcTab[1])
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t v = i;
+            for (int k = 0; k < 8; k++) v = (v & 1) ? 0xEDB88320u ^ (v >> 1) : v >> 1;
+            g_crcTab[i] = v;
+        }
+    c = ~c;
+    while (n--) c = g_crcTab[(c ^ *p++) & 0xFF] ^ (c >> 8);
+    return ~c;
+}
+
+static bool hdDirExists(const char* sub) {
+    char p[MAX_PATH];
+    snprintf(p, sizeof(p), "%s/%s", g_game.currentDirectory, sub);
+    /* Só existência: o shim POSIX (platform_posix.c) não informa FILE_ATTRIBUTE_DIRECTORY. */
+    return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
+}
+
+/* <NOME>_<CRC> a partir do caminho carregado (tira pasta, "_tmp_" e extensão). */
+static bool hdKey(const char* path, char* out, size_t outSz) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    uint32_t crc = 0;
+    uint8_t buf[16384];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) crc = hdCrc32(buf, n, crc);
+    fclose(f);
+    const char* b = path;
+    for (const char* s = path; *s; s++) if (*s == '/' || *s == '\\') b = s + 1;
+    if (_strnicmp(b, "_tmp_", 5) == 0) b += 5;
+    char name[64];
+    snprintf(name, sizeof(name), "%s", b);
+    char* dot = strrchr(name, '.');
+    if (dot) *dot = 0;
+    for (char* s = name; *s; s++) *s = (char)toupper((unsigned char)*s);
+    snprintf(out, outSz, "%s_%08X", name, crc);
+    return true;
+}
+
+static void pngChunk(FILE* f, const char* type, const uint8_t* d, uint32_t n) {
+    uint8_t be[4] = { (uint8_t)(n >> 24), (uint8_t)(n >> 16), (uint8_t)(n >> 8), (uint8_t)n };
+    fwrite(be, 1, 4, f);
+    fwrite(type, 1, 4, f);
+    if (n) fwrite(d, 1, n, f);
+    uint32_t c = hdCrc32((const uint8_t*)type, 4, 0);
+    if (n) c = hdCrc32(d, n, c);
+    uint8_t cb[4] = { (uint8_t)(c >> 24), (uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c };
+    fwrite(cb, 1, 4, f);
+}
+
+/* PNG RGBA 8 bits, deflate "stored" (sem compressão): não precisa de zlib. */
+static void hdWritePNG(const char* path, const uint8_t* rgba, int w, int h) {
+    size_t row = (size_t)w * 4 + 1, raw = row * h;
+    size_t nBlk = (raw + 65534) / 65535;
+    size_t zlen = 2 + raw + nBlk * 5 + 4;
+    uint8_t* z = (uint8_t*)malloc(zlen);
+    uint8_t* r = (uint8_t*)malloc(raw);
+    if (!z || !r) { free(z); free(r); return; }
+    for (int y = 0; y < h; y++) {
+        r[y * row] = 0;
+        memcpy(r + y * row + 1, rgba + (size_t)y * w * 4, (size_t)w * 4);
+    }
+    size_t o = 0, pos = 0;
+    z[o++] = 0x78; z[o++] = 0x01;
+    while (pos < raw) {
+        uint32_t len = (uint32_t)((raw - pos) > 65535 ? 65535 : (raw - pos));
+        z[o++] = (pos + len >= raw) ? 1 : 0;
+        z[o++] = (uint8_t)len; z[o++] = (uint8_t)(len >> 8);
+        z[o++] = (uint8_t)~len; z[o++] = (uint8_t)(~len >> 8);
+        memcpy(z + o, r + pos, len); o += len; pos += len;
+    }
+    uint32_t a = 1, bsum = 0;
+    for (size_t i = 0; i < raw; i++) { a = (a + r[i]) % 65521; bsum = (bsum + a) % 65521; }
+    uint32_t ad = (bsum << 16) | a;
+    z[o++] = (uint8_t)(ad >> 24); z[o++] = (uint8_t)(ad >> 16); z[o++] = (uint8_t)(ad >> 8); z[o++] = (uint8_t)ad;
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+        uint8_t ih[13] = { (uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w,
+                           (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h,
+                           8, 6, 0, 0, 0 };
+        fwrite(sig, 1, 8, f);
+        pngChunk(f, "IHDR", ih, 13);
+        pngChunk(f, "IDAT", z, (uint32_t)o);
+        pngChunk(f, "IEND", NULL, 0);
+        fclose(f);
+    }
+    free(z); free(r);
+}
+
+/* Aplica dump/substituição HD. *data/*hdW/*hdH podem ser trocados pela versão HD. */
+#if 0  /* DESATIVADO (30/09/2026): UPSCALE xBRZ — lento na Select (centenas de
+        * texturas por tela) e ~1,3 GB de VRAM em 4X, sem ganho que valesse.
+        * Preservado; o bloco tem comentários internos, por isso #if 0. */
+uint8_t* Xbrz_Scale(const uint8_t* srcRGBA, int w, int h, int N);   /* xbrz.c */
+
+/* UPSCALE (GRAPHICS SETTINGS): sem HD\ para a textura, amplia com xBRZ. */
+static int Texture_XbrzApply(uint8_t** data, int w, int h, int* hdW, int* hdH) {
+    int N = g_game.gfxUpscale;
+    if (N < 2 || N > 4) return 0;
+    /* Teto de 1024 px por lado: em 4x a Select (105 banners 256² + atlas 512²)
+     * passava de 2 GB de textura e o driver caía (TDR, LiveKernelEvent 117) no
+     * processo 32-bit. O fator cai por textura: 512² -> 2x, 1024² não amplia. */
+    while (N >= 2 && (w * N > 1024 || h * N > 1024)) N--;
+    if (N < 2) return 0;
+    uint32_t t0 = timeGetTime();
+    uint8_t* up = Xbrz_Scale(*data, w, h, N);
+    if (!up) return 0;
+    free(*data);
+    *data = up; *hdW = w * N; *hdH = h * N;
+    Log_Print("XBRZ: %dx%d -> %dx%d (%u ms)\n", w, h, *hdW, *hdH, timeGetTime() - t0);
+    /* Telas carregam centenas de texturas de uma vez: sem bombear as mensagens a
+     * janela fica "Não respondendo" durante a ampliação. Só enfileira eventos. */
+    SDL_PumpEvents();
+    return 1;
+}
+#endif  /* DESATIVADO */
+/* Com o xBRZ desativado, as chamadas abaixo só devolvem "sem troca". */
+static int Texture_XbrzApply(uint8_t** data, int w, int h, int* hdW, int* hdH) {
+    (void)data; (void)w; (void)h; (void)hdW; (void)hdH;
+    return 0;
+}
+
+static int Texture_HDApply(const char* path, uint8_t** data, int w, int h, int* hdW, int* hdH) {
+    *hdW = w; *hdH = h;
+    bool dump = hdDirExists("HD_DUMP"), hd = hdDirExists("HD");
+    if (!dump && !hd) return Texture_XbrzApply(data, w, h, hdW, hdH);
+    char key[96], p[MAX_PATH];
+    if (!hdKey(path, key, sizeof(key))) return 0;
+    if (dump) {
+        snprintf(p, sizeof(p), "%s/HD_DUMP/%s.png", g_game.currentDirectory, key);
+        if (GetFileAttributesA(p) == INVALID_FILE_ATTRIBUTES) hdWritePNG(p, *data, w, h);
+    }
+    if (!hd) return Texture_XbrzApply(data, w, h, hdW, hdH);
+    snprintf(p, sizeof(p), "%s/HD/%s.png", g_game.currentDirectory, key);
+    if (GetFileAttributesA(p) == INVALID_FILE_ATTRIBUTES) return Texture_XbrzApply(data, w, h, hdW, hdH);
+    uint8_t* hdData = NULL;
+    int nw = 0, nh = 0;
+    if (!Texture_LoadPNG(p, &hdData, &nw, &nh)) return Texture_XbrzApply(data, w, h, hdW, hdH);
+    if (nw < w || nh < h || nw % w || nh % h || nw / w != nh / h) {
+        Log_Print("HD: '%s' ignorada: %dx%d não é múltiplo inteiro de %dx%d\n", key, nw, nh, w, h);
+        free(hdData);
+        return Texture_XbrzApply(data, w, h, hdW, hdH);
+    }
+    free(*data);
+    *data = hdData; *hdW = nw; *hdH = nh;
+    Log_Print("HD: '%s' %dx%d -> %dx%d\n", key, w, h, nw, nh);
+    return 1;
+}
+
+/* Textura HD: mipmaps para reduzir sem serrilhado quando a janela é menor que a HD. */
+static void Texture_HDMipmaps(uint8_t* data, int w, int h) {
+    gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGBA, w, h, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    g_game.gfxTexFilter ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR);
+}
+
 int Texture_Load(const char* name) {
     int idx = Texture_FindFree();
     if (idx < 0) return -1;
@@ -558,9 +733,14 @@ int Texture_Load(const char* name) {
         return -1;
     }
 
+    int hdW, hdH;
+    int isHD = Texture_HDApply(path, &data, w, h, &hdW, &hdH);
+
     Texture* t = &g_game.textures[idx];
-    t->id = Texture_CreateGL(data, w, h);
-    t->width = w;
+    t->id = Texture_CreateGL(data, hdW, hdH);
+    if (isHD) Texture_HDMipmaps(data, hdW, hdH);
+    t->hd = isHD;
+    t->width = w;      /* lógico, mesmo com HD */
     t->height = h;
     t->format = fmt;
     t->inUse = true;
@@ -610,10 +790,13 @@ int Texture_LoadFromMemoryColorKey(const uint8_t* buf, uint32_t bufSize, const c
     uint8_t* data = NULL;
     int w = 0, h = 0, fmt = 0;
     if (!Texture_LoadFile(tmpPath, &data, &w, &h, &fmt)) { remove(tmpPath); return -1; }
+    /* HD antes do color key: o dump sai sem ele e a HD passa pelo mesmo processo. */
+    int hdW, hdH;
+    int isHD = Texture_HDApply(tmpPath, &data, w, h, &hdW, &hdH);
     remove(tmpPath);
 
-    int stride = w * 4;
-    for (int i = 0; i < h * stride; i += 4) {
+    int stride = hdW * 4;
+    for (int i = 0; i < hdH * stride; i += 4) {
         uint8_t r = data[i];
         uint8_t g = data[i+1];
         uint8_t b = data[i+2];
@@ -630,8 +813,10 @@ int Texture_LoadFromMemoryColorKey(const uint8_t* buf, uint32_t bufSize, const c
     if (idx < 0) { free(data); return -1; }
 
     Texture* t = &g_game.textures[idx];
-    t->id = Texture_CreateGL(data, w, h);
-    t->width = w;
+    t->id = Texture_CreateGL(data, hdW, hdH);
+    if (isHD) Texture_HDMipmaps(data, hdW, hdH);
+    t->hd = isHD;
+    t->width = w;      /* lógico, mesmo com HD */
     t->height = h;
     t->format = GL_RGBA;
     t->inUse = true;

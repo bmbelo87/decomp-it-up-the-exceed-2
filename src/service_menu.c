@@ -505,6 +505,13 @@ static const char* SVC_GFX_ITEMS[8] = {
     "FULLSCREEN", "RESOLUTION", "VSYNC", "TEXTURE FILTER",
     "SHOW FPS", "ASPECT", "SAVE AND EXIT", "EXIT"
 };
+/* DESATIVADO (30/09/2026): item UPSCALE (XBRZ), entre ASPECT e SAVE AND EXIT.
+static const char* SVC_GFX_ITEMS[9] = {
+    "FULLSCREEN", "RESOLUTION", "VSYNC", "TEXTURE FILTER",
+    "SHOW FPS", "ASPECT", "UPSCALE (XBRZ)", "SAVE AND EXIT", "EXIT"
+};
+static const char* SVC_GFX_UPS[5] = { "OFF", "OFF", "2X", "3X", "4X" };
+*/
 static const char* SVC_GFX_RES[5] = { "640x480", "800x600", "1024x768", "1280x960", "1600x1200" };
 
 static void svcRenderGraphics(void)
@@ -515,7 +522,7 @@ static void svcRenderGraphics(void)
     svcColor(SVC_NORMAL);
     svcText(276.0f, 432.0f, "GRAPHICS SETTINGS");
 
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {   /* era 9 com o UPSCALE */
         float y = (float)(352 - i * 20);
         svcColorFor(i, g_svcCursor);
         svcText(196.0f, y, SVC_GFX_ITEMS[i]);
@@ -526,13 +533,14 @@ static void svcRenderGraphics(void)
         case 3: svcText(404.0f, y, g_game.gfxTexFilter ? "SHARP" : "SMOOTH"); break;
         case 4: svcText(404.0f, y, g_game.gfxShowFps ? "ON" : "OFF"); break;
         case 5: svcText(404.0f, y, g_game.gfxAspect ? "STRETCH" : "4:3"); break;
+        /* case 6: svcText(404.0f, y, SVC_GFX_UPS[(g_game.gfxUpscale >= 2 && g_game.gfxUpscale <= 4) ? g_game.gfxUpscale : 0]); break; */
         default: break;
         }
     }
 
     if (hit & SVC_BIT_TEST) {
         g_svcCursor++;
-        if (g_svcCursor > 7) g_svcCursor = 0;
+        if (g_svcCursor > 7) g_svcCursor = 0;   /* era 8 com o UPSCALE */
     }
     if (hit & SVC_BIT_SERVICE) {
         switch (g_svcCursor) {
@@ -542,6 +550,8 @@ static void svcRenderGraphics(void)
         case 3: g_game.gfxTexFilter = !g_game.gfxTexFilter; Window_ApplyGraphics(); break;
         case 4: g_game.gfxShowFps = !g_game.gfxShowFps; break;
         case 5: g_game.gfxAspect = !g_game.gfxAspect; Window_ApplyGraphics(); break;
+        /* case 6: g_game.gfxUpscale = (g_game.gfxUpscale < 2) ? 2 : (g_game.gfxUpscale >= 4 ? 0 : g_game.gfxUpscale + 1); break;
+         * (UPSCALE desativado: SAVE AND EXIT/EXIT voltam a ser 6/7) */
         case 6:
             GameOption_Save();
             /* fall-through: SAVE AND EXIT salva e sai, como na GAME OPTION */

@@ -336,6 +336,18 @@ void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha, floa
      * altura: os dígitos 5-9 desciam alguns pixels. O original (0x40c780) usa os
      * 45 px exatos; com CLAMP_TO_EDGE as 2 linhas além de 1.0 repetem a última
      * linha do DEC00.PNG, que é transparente (alfa 0). */
+    /* Dígitos 5-9: a célula passa do fim da textura (213..258 de 256; com o +1px
+     * acima, 214..259). Com CLAMP (o S3D original também usa, D3DTADDRESS_CLAMP)
+     * as linhas além de 256 repetem a linha 255, que ainda tem pixels do dígito
+     * — era a "sombra" esticada embaixo dos 5-9. Corta o quad na mesma
+     * proporção do V que sobra: o topo e a escala ficam iguais, só a parte fora
+     * da textura deixa de ser desenhada. */
+    if (vEnd > 1.0f) {
+        float keep = (1.0f - vTop) / (vEnd - vTop);
+        yUp += h * (1.0f - keep);   /* sobe a base; o topo (yUp + h original) fica */
+        h *= keep;
+        vEnd = 1.0f;
+    }
     Texture_Bind(texId);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);

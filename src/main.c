@@ -45,11 +45,12 @@ static void LoadBGAForState(GameState state) {
     const char* bgaName = NULL;
     switch (state) {
     case STATE_WARNING_INIT:
-    case STATE_WARNING_ANIM: bgaName = "R_WARN_A"; break; /* Exceed: BGA\R_WARN_A.DAT */
+    case STATE_WARNING_ANIM: bgaName = "R_WARN"; break;   /* Exceed2: BGA\R_WARN.DAT (PIU32.EXE); Exceed usava R_WARN_A */
     case STATE_INTRO:        bgaName = ""; break;       /* vídeo, sem BGA */
     case STATE_CREDIT:       bgaName = "82"; break;
     case STATE_NAMEINPUT:    bgaName = "085"; break;    /* CNameInput 0x414012: BGA\085.DAT */
     case STATE_IR:           bgaName = "IR"; break;     /* CInternetRanking 0x41371B: BGA\IR.DAT */
+    case STATE_STATION:      bgaName = ""; break;       /* STATION.DAT carregado em Station_Enter */
     case STATE_HIGHSCORE:    bgaName = "HS"; break;     /* CHighscore 0x4126E7: BGA\HS.DAT */     /* CTitle::Begin 0x41C04A: BGA\82.DAT sobre o CREDIT.MOV */
     case STATE_LOGO_ENTER:   bgaName = "81"; break;
     case STATE_MENU_ENTER:
@@ -233,6 +234,15 @@ void Game_Init(HINSTANCE hInstance) {
             snprintf(stxPath, sizeof(stxPath), "%s/%s.STX", stepDir, Song_DataIdStr(e->id));
             FILE* test = fopen(stxPath, "rb");
             if (test) { fclose(test); e->hasChart = true; }
+            else {
+                /* Exceed2: .STX dentro de STEP.DAT (PIU32.EXE 0x40d0d7) */
+                char datPath[MAX_PATH], stxName[64];
+                uint32_t sz = 0;
+                snprintf(datPath, sizeof(datPath), "%s/STEP.DAT", g_game.currentDirectory);
+                snprintf(stxName, sizeof(stxName), "%s.STX", Song_DataIdStr(e->id));
+                uint8_t* stx = Resource_ExtractFromPack(datPath, stxName, &sz);
+                if (stx) { free(stx); e->hasChart = true; }
+            }
         }
         g_game.selectedSongIndex = 0;
         g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, "EASY");
@@ -417,6 +427,9 @@ void Game_Update(float dt) {
     case STATE_EXSELECT:
         ExSelect_Update(dt);
         break;
+    case STATE_STATION:
+        Station_Update(dt);
+        break;
     case STATE_MENU_ENTER:
     case STATE_MENU_INPUT:
         /* Gamestate_UpdateMenu(dt); */   /* DESATIVADO (menu do Prex3) */
@@ -439,9 +452,11 @@ void Game_Update(float dt) {
             Movie_Close();
             Result_Enter();
         }
+        if (Movie_IsOpen()) Movie_Update(dt);   /* Exceed2: GRADE.MOV (0x40A942) */
         Result_Update(dt);
         break;
     case STATE_DANCE_GRADE_DISPLAY:
+        if (Movie_IsOpen()) Movie_Update(dt);   /* Exceed2: GRADE.MOV (0x40A984) */
         Result_Update(dt);
         break;
     case STATE_STAGE_TRANSITION:
@@ -755,6 +770,12 @@ void Game_Render(void) {
         glColor4f(1, 1, 1, 1);
     }
 
+    /* Exceed2: GRADE.MOV desenhado antes do GRADE.DAT nas duas fases da nota
+     * (PIU32.EXE 0x40A942 / 0x40A984: 0x420C80 e só depois o BGA) */
+    if (g_exceedSongIds && Movie_IsOpen() &&
+        (g_game.state == STATE_DANCE_GRADE_ENTER || g_game.state == STATE_DANCE_GRADE_DISPLAY))
+        Movie_Render();
+
     if (g_game.isVSL && g_vsl.active) {
         VSL_Render(g_game.bgaFrame);
     } else if (g_game.bgaPicCount > 0 &&
@@ -768,6 +789,7 @@ void Game_Render(void) {
         g_game.state != STATE_SONG_SELECT_B &&
         g_game.state != STATE_CREDIT &&         /* CREDIT desenha por slot (intro.c) */
         g_game.state != STATE_EXSELECT &&
+        g_game.state != STATE_STATION &&        /* STATION desenha por cena (station.c) */
         g_game.state != STATE_HIGHSCORE &&
         g_game.state != STATE_IR &&
         g_game.state != STATE_NAMEINPUT) {      /* NAMEINPUT desenha por slot (nameinput.c) */             /* IR desenha o próprio BGA (ir.c) */      /* HIGHSCORE desenha por slot (highscore.c) */       /* EXSELECT desenha por slot (exceed_select.c) */
@@ -790,6 +812,9 @@ void Game_Render(void) {
             break;
         case STATE_EXSELECT:
             ExSelect_Render();
+            break;
+        case STATE_STATION:
+            Station_Render();
             break;
         case STATE_MENU_ENTER:
         case STATE_MENU_INPUT:

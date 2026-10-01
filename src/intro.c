@@ -55,14 +55,7 @@ static bool Demo_Start(void) {
         g_game.cmdRandomVelocity[p] = false;
     }
     /* Opção da EEPROM: som na demo */
-    char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s/eeprom.bin", g_game.currentDirectory);
-    FILE* f = fopen(path, "rb");
-    if (f) {
-        uint8_t b = 1;
-        if (fseek(f, 0x7F0, SEEK_SET) == 0 && fread(&b, 1, 1, f) == 1) g_demoSound = (b != 0);
-        fclose(f);
-    }
+    g_demoSound = (Eeprom2_Data()[0x7F0] != 0);   /* EEPROM +0x7F0 (PIUEXCEED2.INI, eeprom_x2.c) */
     Log_Print("DEMO: RUN %s -h -demo (som %d)\n", buf, g_demoSound);
     g_exDemo = true;
     Loading_Enter(id);
@@ -92,6 +85,7 @@ void Attract_Idle(void) {
 
 /* [0x568FF4] bits 0/1: quem entrou no CREDIT (lido pela Select) */
 unsigned Title_GetJoinedMask(void) { return g_titleJoined; }
+void Title_SetJoinedMask(unsigned m) { g_titleJoined = m; }   /* CStation: entrada tardia */
 
 static void intro_open(const char* rel, bool loop) {
     char path[MAX_PATH];
@@ -161,6 +155,14 @@ void Gamestate_UpdateIntro(float dt) {
         /* 0x41C4F3 / 0x41C56B: com alguém dentro, [this+0x1C] conta +1 por
          * frame (fade preto = contador/60) e passando de 60 vai para "SELECT"
          * (0x4102D4). */
+        /* Exceed2 (PIU32.EXE 0x41acfe / 0x41aef7): com alguém dentro a fase 3
+         * vai direto para "STATION" (0x41af1f), sem fade; o CREDIT.MOV e o
+         * TITLE.AUD continuam (o CStation desenha o vídeo, 0x419d1f). */
+        if (g_titleJoined & 3) {
+            Game_ChangeState(STATE_STATION);
+            return;
+        }
+#if 0   /* Exceed (exceed.exe): fade de 60 quadros e SELECT — DESATIVADO */
         if (g_titleJoined & 3) {
             if (g_titleFade > 60) {
                 Movie_Close();
@@ -173,6 +175,7 @@ void Gamestate_UpdateIntro(float dt) {
             }
             g_titleFade++;
         }
+#endif
         break;
     default:
         break;

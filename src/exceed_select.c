@@ -67,6 +67,8 @@ static bool g_previewOn;    /* +0x84: preview AUDIO\D%X.AUD já disparado */
 static bool g_intro;        /* estado 1 da Select (0x4165A4) antes do principal */
 
 static int wrapCursor(int c);
+static int g_loopCnt[4];    /* Exceed2: contadores das camadas 43..46 (definição abaixo) */
+static int g_sndChannel[3];  /* Exceed2: BANYA/KPOP/POP.WAV (definição abaixo) */
 
 
 /* ── songDB sintético do Exceed ─────────────────────────────────────────────
@@ -74,7 +76,8 @@ static int wrapCursor(int c);
  * NORMAL 1, HARD 2, CRAZY 4, DOUBLE 5 (FREESTYLE, "-d"), NIGHTMARE 3 ("-nm").
  * Mesma ordem de ExceedSong.level. */
 bool g_exceedSongIds = false;
-static const char* k_dbModeName[5] = { "NORMAL", "HARD", "CRAZY", "DOUBLE", "NIGHTMARE" };
+static const char* k_dbModeName[6] = { "NORMAL", "HARD", "CRAZY", "DOUBLE", "NIGHTMARE", "DIVISION" };
+#define EX_DB_DIVISION 5   /* Exceed2 "RUN %X -BT" (0x416783): seção 7 do STX */
 
 const char* Song_IdStr(int id) {
     static char buf[4][16];
@@ -118,6 +121,26 @@ void ExSelect_BuildSongDB(SongDB* db) {
             md->songCount++;
         }
     }
+    /* DIVISION: músicas do canal BATTLE (4). O nível exibido não está na
+     * tabela para esse modo: HIPÓTESE, usa o primeiro nível existente. */
+    {
+        SongMode* md = &db->modes[db->modeCount++];
+        strncpy(md->name, k_dbModeName[EX_DB_DIVISION], sizeof(md->name) - 1);
+        for (int c = 0; c < EX_CHANNEL_MAX && md->songCount < MAX_SONGS_PER_MODE; c++) {
+            int id = g_exChannels[4][c];
+            if (id == 0) break;
+            int lv = 0;
+            for (int i = 0; i < EX_SONG_COUNT; i++) {
+                if ((int)g_exSongs[i].id != id) continue;
+                for (int k = 0; k < 5; k++)
+                    if (g_exSongs[i].level[k] > 0) { lv = g_exSongs[i].level[k]; break; }
+                break;
+            }
+            md->songIds[md->songCount] = id;
+            md->difficulties[md->songCount] = lv;
+            md->songCount++;
+        }
+    }
     Log_Print("EXSELECT: songDB sintético: %d músicas, %d modos\n", db->songCount, db->modeCount);
 }
 
@@ -136,22 +159,46 @@ void ExSelect_BuildSongDB(SongDB* db) {
 #define EXMOD_1000      0x1000   /* sem ícone, limpa velocidade; efeito não identificado */
 #define EXMOD_UNLOCK    0x2000   /* libera as ocultas em 0x4192F0 */
 #define EX_XMODE        0x8000   /* [0x568FF4]: X-MODE, global */
+#define EXMOD_DECEL     0x4000   /* Exceed2: Deceleration (códigos 7/8/9) */
+#define EXMOD_ACCEL     0x8000   /* Exceed2: Acceleration (código 10); bit do jogador, não o global */
 
 static unsigned g_joined;       /* [0x568FF4] bits 0/1 */
+/* Exceed2: estação escolhida no CStation ([0x484FB4]: 0 ARCADE, 1 REMIX, 2 BATTLE)
+ * e canal inicial vindo do argumento do proc ("SELECT" 0, "SELECT 3", "SELECT 4";
+ * 0x413860..0x4138A4, só na primeira Select do crédito, [0x484FA4]). */
+int  g_exStation = 0;
+static int  g_startChannel = -1;
+void ExSelect_SetStation(int station, int startChannel) {
+    g_exStation = station;
+    g_startChannel = startChannel;
+}
 static unsigned g_flags;        /* [0x568FF4] acima de 0xFFF (X-MODE) */
 bool ExSelect_IsXMode(void) { return (g_flags & 0x8000u) != 0; }
+/* [0x484F7C] acima de 0xFFF: skin (0x10000 / 0x20000, PIU32.EXE 0x4043A1) etc. */
+unsigned ExSelect_GetFlags(void) { return g_flags; }
 static unsigned g_mods[2];      /* +0x184 de cada jogador */
 static int      g_joinFrame[2]; /* +0x4C (P1) / +0x54 (P2) */
 static uint8_t  g_buf9[2][9];   /* 0x5638E0 */
 static uint8_t  g_buf5[2][5];   /* 0x5638F4 */
 static uint8_t  g_buf6[2][6];   /* 0x563900 */
+static uint8_t  g_buf24[2][24]; /* arcade piu 0x80C5B00: código de 24 botões */
+/* arcade piu 0x808D245 (24 botões), verificado em 0x8063715: só no REMIX
+ * STATION ([0x80BED0C] == 1) grava EEPROM +0x525 = 1, que tira a flag de
+ * oculta da B57 (Canon D FULL REMIX, 0x806336E). Não existe no PIU32. */
+static const uint8_t k_code24[24] = {
+    8, 16, 8, 16, 1, 2, 1, 2, 8, 1, 8, 1, 16, 2, 16, 2, 1, 16, 2, 8, 1, 16, 2, 8
+};
+/* EEPROM +0x525 do arcade. O layout de EEPROM do projeto ainda é o do Exceed,
+ * então por enquanto vale só durante a execução. */
+static bool g_exCanonUnlocked = false;
 
 static const uint8_t k_code6[6] = { 1, 2, 1, 2, 1, 2 };                  /* 0x455140 */
 static const uint8_t k_code5[2][5] = {                                   /* 0x455148 */
     { 8, 16, 8, 16, 4 },
     { 8, 16, 1, 2, 4 },
 };
-static const uint8_t k_code9[7][9] = {                                   /* 0x455154 */
+#if 0   /* Exceed (exceed.exe 0x455154) — DESATIVADO */
+static const uint8_t k_code9[7][9] = {
     { 8, 16, 8, 16, 8, 16, 8, 16, 4 },
     { 2, 1, 16, 8, 2, 1, 16, 8, 4 },
     { 8, 16, 8, 16, 1, 2, 1, 2, 4 },
@@ -160,11 +207,41 @@ static const uint8_t k_code9[7][9] = {                                   /* 0x45
     { 16, 16, 1, 8, 2, 16, 8, 16, 16 },
     { 1, 16, 1, 16, 2, 8, 2, 8, 4 },
 };
+#endif
+/* Exceed2 (PIU32.EXE 0x45A3A8, 15 x 9; verificador 0x416C90 / 0x417040).
+ * 5 e 6 botões (0x45A430 / 0x45A43C) são os mesmos do Exceed. */
+#define EX_CODE9_COUNT 13   /* era 15 (PIU32); skins com as 2 sequências do arcade */
+static const uint8_t k_code9[EX_CODE9_COUNT][9] = {
+    { 8, 16, 8, 16, 8, 16, 8, 16, 4 },    /* 0  ^rv, limpa x2/x3/x4  (0x416D31) */
+    { 2, 1, 16, 8, 2, 1, 16, 8, 4 },      /* 1  ^m                   (0x416D43) */
+    { 8, 16, 8, 16, 1, 2, 1, 2, 4 },      /* 2  ^r, limpa 0x200      (0x416D51) */
+    { 8, 1, 16, 2, 2, 8, 16, 1, 4 },      /* 3  ^0x800               (0x416D64) */
+    { 2, 1, 16, 8, 2, 16, 1, 8, 4 },      /* 4  ^0x1000, limpa vel.  (0x416D74) */
+    /* { 2, 4, 8, 2, 16, 4, 1, 16, 4 }, */ /* 5 do PIU32 (DR C UL DR UR C DL UR C) — DESATIVADO */
+    { 1, 16, 4, 1, 2, 8, 4, 2, 4 },       /* 5  |0x2000 Solitary 2: sequência do arcade (piu 0x808D1E5),
+                                           *    DL UR C DL DR UL C DR C, só no ARCADE STATION */
+    { 1, 16, 1, 16, 2, 8, 2, 8, 4 },      /* 6  ^X-MODE (fora do BATTLE, 0x416DA0) */
+    { 8, 8, 8, 16, 16, 16, 8, 1, 4 },     /* 7  liga 0x4000 (DECEL), limpa 0x8000 (0x416DBC); usuário: "Deceleration com X-MODE" */
+    { 2, 2, 2, 1, 1, 1, 2, 8, 4 },        /* 8  ^0x4000, limpa 0x8000 (0x416DCA); usuário: "Acceleration com X-MODE" — o binário não liga 0x8000 */
+    { 1, 1, 2, 2, 8, 8, 16, 16, 4 },      /* 9  global X-MODE + 0x4000 DECEL (fora do BATTLE, 0x416DE4); usuário: "Deceleration" */
+    { 2, 2, 1, 1, 16, 16, 8, 8, 4 },      /* 10 global X-MODE + 0x8000 ACCEL (fora do BATTLE, 0x416E11); usuário: "Acceleration" */
+    /* PIU32 11..14 (DR DR DR DR UL UL UR DL + C/UR/DL/DR) — DESATIVADOS:
+    { 2, 2, 2, 2, 8, 8, 16, 1, 4 },       11 global 0x10000 (0x416E3D)
+    { 2, 2, 2, 2, 8, 8, 16, 1, 16 },      12 global 0x20000 (0x416E4E)
+    { 2, 2, 2, 2, 8, 8, 16, 1, 1 },       13 global 0x40000 (0x416E5F)
+    { 2, 2, 2, 2, 8, 8, 16, 1, 2 },       14 global 0x80000 (0x416E70) */
+    /* Arcade (piu 0x808D244.., 0x80635AF / 0x80635BF): no arcade gravam 0x40000
+     * (SKIN02) e 0x80000 (SKIN01); aqui ligam os bits que o PC usa para as
+     * mesmas skins (0x10000 SKIN02, 0x20000 SKIN01, PIU32 0x4043A1). */
+    { 2, 2, 2, 1, 2, 8, 16, 1, 4 },       /* 11 DR DR DR DL DR UL UR DL C  -> SKIN02 */
+    { 2, 2, 2, 1, 2, 8, 16, 1, 16 },      /* 12 DR DR DR DL DR UL UR DL UR -> SKIN01 */
+};
 
 static void clearCodeBuffers(int p) {
     memset(g_buf9[p], 0, sizeof(g_buf9[p]));
     memset(g_buf5[p], 0, sizeof(g_buf5[p]));
     memset(g_buf6[p], 0, sizeof(g_buf6[p]));
+    memset(g_buf24[p], 0, sizeof(g_buf24[p]));
 }
 
 /* 0x415CFC / 0x415D88 / 0x415DD8: desloca e acrescenta no fim */
@@ -172,9 +249,11 @@ static void pushCode(int p, uint8_t v) {
     memmove(g_buf9[p], g_buf9[p] + 1, 8); g_buf9[p][8] = v;
     memmove(g_buf5[p], g_buf5[p] + 1, 4); g_buf5[p][4] = v;
     memmove(g_buf6[p], g_buf6[p] + 1, 5); g_buf6[p][5] = v;
+    memmove(g_buf24[p], g_buf24[p] + 1, 23); g_buf24[p][23] = v;
 }
 
 static void unlockHidden(void);
+static void buildList(void);
 static void playWave(int snd) {
     if (g_waveSoundIds[snd] >= 0) Audio_Play(g_waveSoundIds[snd], false);
 }
@@ -209,16 +288,27 @@ static void checkCodes(int p) {
     unsigned oldMods = g_mods[p], oldFlags = g_flags;
     unsigned m = g_mods[p];
 
-    for (int k = 0; k < 7; k++) {
+    bool battle = (g_exStation == 2);   /* [0x484FB4] == 2 */
+    for (int k = 0; k < EX_CODE9_COUNT; k++) {
         if (memcmp(g_buf9[p], k_code9[k], 9) != 0) continue;
-        switch (k) {                                     /* 0x41585D */
-        case 0: m = (m & ~0x0Eu) ^ EXMOD_RV; break;      /* 0x415939 */
-        case 1: m ^= EXMOD_M; break;                     /* 0x41592A */
-        case 2: m = (m & ~EXMOD_200) ^ EXMOD_R; break;   /* 0x415912 */
-        case 3: m ^= EXMOD_800; break;                   /* 0x415900 */
-        case 4: m = (m & ~0x41Eu) ^ EXMOD_1000; break;   /* 0x4158BD */
-        case 5: m |= EXMOD_UNLOCK; g_mods[p] = m; unlockHidden(); break; /* 0x41588F */
-        case 6: g_flags ^= EX_XMODE; break;              /* 0x4158AD: X-MODE */
+        switch (k) {                                     /* 0x416D2A (tabela 0x417000) */
+        case 0: m = (m & ~0x0Eu) ^ EXMOD_RV; break;
+        case 1: m ^= EXMOD_M; break;
+        case 2: m = (m & ~EXMOD_200) ^ EXMOD_R; break;
+        case 3: m ^= EXMOD_800; break;
+        case 4: m = (m & ~0x41Eu) ^ EXMOD_1000; break;
+        case 5:   /* arcade piu 0x80634FD: só no ARCADE STATION */
+            if (g_exStation != 0) break;
+            m |= EXMOD_UNLOCK; g_mods[p] = m; unlockHidden(); break;   /* 0x4140A0 */
+        case 6: if (!battle) g_flags ^= EX_XMODE; break;
+        case 7: m = ((m & ~0x4000u) ^ 0x8000u);          /* cai no caso 8 */
+                /* fallthrough */
+        case 8: m = (m ^ 0x4000u) & ~0x8000u; break;
+        case 9: if (!battle) { g_flags |= EX_XMODE; m |= 0x4000u; } break;
+        case 10: if (!battle) { g_flags |= EX_XMODE; m |= 0x8000u; } break;
+        /* skins exclusivas entre si (o arcade limpa 0x3C0000 antes) */
+        case 11: g_flags = (g_flags & 0xFFF0FFFFu) | 0x10000u; break;   /* SKIN02 */
+        case 12: g_flags = (g_flags & 0xFFF0FFFFu) | 0x20000u; break;   /* SKIN01 */
         }
         g_mods[p] = m;
         clearCodeBuffers(p);
@@ -245,7 +335,19 @@ static void checkCodes(int p) {
         clearCodeBuffers(p);
     }
 
-    /* 0x41579B..0x415810: DL DR DL DR DL DR zera tudo (inclusive o X-MODE) */
+    /* 0x416F7D: DL DR DL DR DL DR zera o jogador e [0x484F7C] &= 0xFFF */
+    /* arcade piu 0x8063715: código de 24 botões — Canon D FULL REMIX no REMIX */
+    if (memcmp(g_buf24[p], k_code24, 24) == 0) {
+        if (g_exStation == 1 && !g_exCanonUnlocked) {
+            g_exCanonUnlocked = true;
+            Eeprom2_SetCanonUnlocked();   /* EEPROM +0x525 = 1, gravado */
+            playWave(SND_2_1);   /* 0x8063736: efeito 9 (EFF_HIDDEN_SELECTED) */
+            buildList();
+            Log_Print("EXSELECT: Canon D FULL REMIX (B57) liberada\n");
+        }
+        clearCodeBuffers(p);
+    }
+
     if (memcmp(g_buf6[p], k_code6, 6) == 0) {
         g_flags = 0;
         g_mods[p] = 0;
@@ -272,9 +374,15 @@ static const int k_panelIdle[5]  = { 660, 720, 780, 840, 900 };   /* 0x456F08 */
 static const int k_panelDir1[5]  = { 1080, 1020, 960, 900, 900 }; /* 0x456EE0 */
 static const int k_panelDir2[5]  = { 660, 660, 720, 780, 840 };   /* 0x456EF4 */
 
-/* 0x456EC8 / 0x456ED4 */
+/* Exceed: 0x456EC8 / 0x456ED4 — DESATIVADO
 static const int k_chLabelFrame[EX_CHANNEL_COUNT] = { 60, 120, 180 };
 static const int k_chLabelSlot[EX_CHANNEL_COUNT]  = { 19, 20, 21 };
+*/
+/* Exceed2: rótulo do canal 0x45A518 / 0x45A52C; brilho do canal (0x4146DB):
+ * 15/16/17 nos canais do ARCADE, 0x29 no REMIX (3) e 0x28 no BATTLE (4) */
+static const int k_chLabelFrame[EX_CHANNEL_COUNT] = { 60, 120, 180, 239, 239 };
+static const int k_chLabelSlot[EX_CHANNEL_COUNT]  = { 19, 20, 21, 39, 38 };
+static const int k_chGlowSlot[EX_CHANNEL_COUNT]   = { 15, 16, 17, 41, 40 };
 
 /* 0x415434: índice do registro pelo ID, -1 se não existe */
 static int findSong(int id) {
@@ -293,13 +401,17 @@ static void buildList(void) {
         if (id == 0) break;
         int s = findSong(id);
         if (s < 0) continue;
-        if (g_exSongs[s].hidden == 0 || unlocked)   /* visible = (hidden == 0), 0x416474 */
+        if (Eeprom2_SongOff(s)) continue;   /* +0x36 <- EEPROM +0x52B (0x412F00) */
+        /* B57: com EEPROM +0x525 = 1 deixa de ser oculta (arcade 0x806336E) */
+        bool hid = g_exSongs[s].hidden != 0 && !(g_exCanonUnlocked && id == 0xB57);
+        if (!hid || unlocked)   /* visible = (hidden == 0), 0x416474 */
             g_list[g_listCount++] = id;
     }
 }
 
 /* 0x419424: depois do código de desbloqueio vai para o BANYA com o cursor
  * em A03 (Monkey Fingers) e remonta a lista. */
+#if 0   /* Exceed (0x419424): BANYA com o cursor em A03 — DESATIVADO */
 static void unlockHidden(void) {
     g_ch = 0;
     buildList();
@@ -310,6 +422,17 @@ static void unlockHidden(void) {
             break;
         }
     }
+}
+#endif
+/* Exceed2 0x4140A0: canal 0 e cursor = posição da B18 na linha crua do canal 0
+ * (0x412F30, não na lista filtrada); 0 se não achar. Depois remonta a lista. */
+static void unlockHidden(void) {
+    g_ch = 0;
+    g_cursor[0] = 0;
+    for (int i = 0; i < EX_CHANNEL_MAX; i++)
+        if (g_exChannels[0][i] == 0xB18) { g_cursor[0] = i; break; }
+    buildList();
+    if (g_cursor[0] >= g_listCount) g_cursor[0] = 0;   /* 0x414023 */
 }
 
 /* 0x419D38: cursor circular */
@@ -336,9 +459,21 @@ void ExSelect_Enter(void) {
 
     /* 0x416206..0x41624F: banners do 90.DAT */
     char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s/BGA/90.DAT", g_game.currentDirectory);
+    /* Exceed2 (PIU32.EXE 0x41335d): BGA\90H.DAT com o byte +0x7EF da EEPROM == 0,
+     * senão BGA\90E.DAT (discos .dds). O layout de EEPROM do projeto ainda é o
+     * do Exceed, então vale o padrão (0 -> 90H); 90.DAT = Exceed. */
+    /* Pedido do usuário: discos sempre do 90E (o original escolhe pelo idioma,
+     * EEPROM +0x7EF: 0 -> 90H). 90H e 90 (Exceed) ficam de reserva. */
+    static const char* k_discDat[3] = { "90E", "90H", "90" };
+    bool discOpen = false;
+    g_exCanonUnlocked = Eeprom2_CanonUnlocked();   /* EEPROM +0x525 */
+    /* for (int d = (Eeprom2_Language() != 0) ? 1 : 0; d < 3 && !discOpen; d++) { */
+    for (int d = 0; d < 3 && !discOpen; d++) {
+        snprintf(path, sizeof(path), "%s/BGA/%s.DAT", g_game.currentDirectory, k_discDat[d]);
+        discOpen = RES_Open(path);
+    }
     for (int i = 0; i < EX_SONG_COUNT; i++) g_bannerTex[i] = -1;
-    if (RES_Open(path)) {
+    if (discOpen) {
         int ok = 0;
         for (int i = 0; i < EX_SONG_COUNT; i++) {
             char name[16];
@@ -374,6 +509,19 @@ void ExSelect_Enter(void) {
     g_startTick = timeGetTime();
     g_timeLeft = 60;
     g_started = false;
+    memset(g_loopCnt, 0, sizeof(g_loopCnt));   /* objeto do BGA recriado no Begin */
+    /* Exceed2 0x415B43..0x415BA3: vozes dos canais do ARCADE */
+    {
+        static const char* k_chVoice[3] = { "BANYA.WAV", "KPOP.WAV", "POP.WAV" };
+        for (int k = 0; k < 3; k++)
+            if (g_sndChannel[k] < 0) g_sndChannel[k] = Audio_LoadWaveFile(k_chVoice[k]);
+    }
+    /* Exceed2 0x413A0D: fim do Begin toca [0xCA0EB0] = WAVE/SELECTASONG.WAV */
+    {
+        static int s_sndSelectASong = -1;
+        if (s_sndSelectASong < 0) s_sndSelectASong = Audio_LoadWaveFile("SELECTASONG.WAV");
+        if (s_sndSelectASong >= 0) Audio_Play(s_sndSelectASong, false);
+    }
 
     g_joined = Title_GetJoinedMask() & 3;
     if (g_joined == 0) g_joined = 1;   /* sem entrada registrada no CREDIT: P1 */
@@ -411,6 +559,11 @@ void ExSelect_Enter(void) {
         g_ch = 0;
         for (int c = 0; c < EX_CHANNEL_COUNT; c++) g_cursor[c] = 0;
     }
+    /* Exceed2 0x413853: na primeira Select do crédito o canal vem do argumento */
+    if (g_startChannel >= 0) {
+        g_ch = g_startChannel;
+        g_startChannel = -1;
+    }
     g_chPrev = g_ch;
     g_chDir = 0;
     g_curDir = 0;
@@ -420,14 +573,26 @@ void ExSelect_Enter(void) {
 }
 
 /* 0x417F87 (dir 1) / 0x41803E (dir 2) */
+static int g_sndChannel[3] = { -1, -1, -1 };   /* [0xCA0E8C..0xCA0E94] */
 static void changeChannel(int dir) {
-    playWave(SND_CHGMOD);   /* 0x417114 / 0x4171F0 */
-    stopPreview();          /* 0x417F8E: 0x42672C, +0x84 = 0 */
+    /* 0x4159BE / 0x415A6F: limpa o "armado" (+0x9C), toca CHGMOD e zera o
+     * quadro do canal antes de olhar o canal; REMIX (3) e BATTLE (4) param aqui
+     * (0x415AD2 / 0x415BDC) */
+    g_armed = false;
+    if (g_ch == 3 || g_ch == 4) {
+        playWave(SND_CHGMOD);
+        g_chFrame = 0;
+        return;
+    }
+    playWave(SND_CHGMOD);   /* 0x4159C5 / 0x415A76 */
+    stopPreview();          /* 0x415AF5: 0x424B70 */
     g_chPrev = g_ch;
     g_chDir = dir;
     g_chFrame = 0;
     if (dir == 1) g_ch = (g_ch == 0) ? 2 : g_ch - 1;
     else          g_ch = (g_ch == 2) ? 0 : g_ch + 1;
+    /* 0x415B31: voz do canal — BANYA / KPOP / POP */
+    if (g_sndChannel[g_ch] >= 0) Audio_Play(g_sndChannel[g_ch], false);
     buildList();
     g_cursor[g_ch] = wrapCursor(g_cursor[g_ch]);
     g_cursorPrev[g_ch] = g_cursor[g_ch];
@@ -460,21 +625,17 @@ static void openPanel(void) {
     if (s < 0) return;
     g_modeCount = 0;
     g_panel2P = (g_joined & 3) == 3;
-    if (!g_panel2P) {
-        for (int m = 0; m < 5; m++)
-            if (g_exSongs[s].level[m] != -1)
-                g_modeList[g_modeCount++] = m;   /* índice em k_modeBit */
-    } else {
-        /* 0x418339..0x4184C5: N H C disponíveis; +0x8C fica com o último
-         * deles; BATTLE (0x40) entra com os dois jogadores */
-        g_battleDiff = 0;
-        for (int m = 0; m < 3; m++)
-            if (g_exSongs[s].level[m] != -1) {
-                g_modeList[g_modeCount++] = m;
-                g_battleDiff = m;
-            }
-        g_modeList[g_modeCount++] = EX_MODE_BATTLE;
-    }
+    /* Exceed2 0x416210..0x4163FA: modo disponível = nível != -1 e trava
+     * (+0x3C + k) == 0; +0x94 fica com o último entre N/H/C. As linhas vêm de
+     * 0x45A444 (1P: N H C FS NM) ou 0x45A46C (2P: N H C; o 4º bit é 0, então a
+     * linha BATTLE do Exceed não existe mais — o 0x40 entra só na máscara). */
+    int rows = g_panel2P ? 3 : 5;
+    g_battleDiff = 0;
+    for (int m = 0; m < rows; m++)
+        if (g_exSongs[s].level[m] != -1 && g_exSongs[s].lock[m] == 0) {
+            g_modeList[g_modeCount++] = m;   /* índice em k_modeBit */
+            if (m < 3) g_battleDiff = m;
+        }
     if (g_modeCount == 0) return;
     if (!g_previewOn) startPreview();   /* 0x4182CE: preview ainda não tinha disparado */
     g_chosen = true;
@@ -523,16 +684,46 @@ static void startGame(void) {
     if (g_started) return;
     int s = findSong(g_list[wrapCursor(g_cursor[g_ch])]);
     if (s < 0) return;
+    /* Exceed2 0x41677B: no canal BATTLE o comando é "RUN %X -BT" com a música
+     * do cursor do canal 4 ([+0x70]); o gameplay usa a seção Division do STX.
+     * Itens/medidores do modo batalha (SCRIPT\BATTLEMODE.LUA) ainda não existem. */
+    if (g_ch == 4) {
+        int id = (int)g_exSongs[s].id;
+        g_started = true;
+        Eeprom2_CountPlay(s);   /* 0x4168FA */
+        stopPreview();
+        playWave(SND_START);
+        Log_Print("EXSELECT: RUN %X -BT\n", (unsigned)id);
+        g_game.selectedSongIndex = Song_FindByID(&g_game.songDB, id);
+        g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, k_dbModeName[EX_DB_DIVISION]);
+        if (g_game.selectedSongIndex < 0 || g_game.selectedModeIndex < 0) {
+            Log_Print("EXSELECT: songDB sem a música/DIVISION (%d/%d) — sem gameplay\n",
+                      g_game.selectedSongIndex, g_game.selectedModeIndex);
+            return;
+        }
+        g_game.selectedDifficulty = 0;
+        g_game.activePlayerMask = (int)(g_joined & 3);
+        g_game.isBattleMode = false;
+        for (int p = 0; p < 2; p++) {
+            unsigned mm = g_mods[p];
+            g_game.cmdSpeedMult[p] = (mm & EXMOD_X8) ? 8 : (mm & EXMOD_X4) ? 4 :
+                                     (mm & EXMOD_X3) ? 3 : (mm & EXMOD_X2) ? 2 : 1;
+            g_game.cmdRandomVelocity[p] = (mm & EXMOD_RV) != 0;
+        }
+        Loading_Enter(id);
+        return;
+    }
     int m = -1;
     if (g_chosen && g_panelIdx >= 0 && g_panelIdx < g_modeCount) {
         m = g_modeList[g_panelIdx];
     } else {
         int last = ((g_joined & 3) == 3) ? 3 : 5;   /* 2P: só N H C */
-        for (int k = 0; k < last; k++)
-            if (g_exSongs[s].level[k] != -1) { m = k; break; }
+        for (int k = 0; k < last; k++)              /* 0x4164FB..0x41673C */
+            if (g_exSongs[s].level[k] != -1 && g_exSongs[s].lock[k] == 0) { m = k; break; }
     }
     if (m < 0) return;
     g_started = true;
+    Eeprom2_CountPlay(s);   /* Exceed2 0x4168FA: EEPROM +0x633 + 2*i */
     stopPreview();          /* 0x418512 */
     playWave(SND_START);    /* 0x418521 */
     /* 0x4186D4..0x418712: BATTLE usa o sufixo da dificuldade +0x8C */
@@ -664,8 +855,16 @@ void ExSelect_Update(float dt) {
         else if (padHit(PAD_DR) || (padDown(PAD_DR) && g_curFrame > 20))
             moveCursor(2);
         /* 0x41770B..0x41775D: CENTER (bit 0x04 / 0x400) */
-        else if (padHit(PAD_C))
-            openPanel();
+        else if (padHit(PAD_C)) {
+            /* Exceed2 0x41618A: no BATTLE não há painel — o 1º CENTER arma
+             * (+0x9C), o 2º zera o contador e o jogo começa */
+            if (g_ch == 4) {
+                if (g_armed) g_timeLeft = 0;
+                else         g_armed = true;
+            } else {
+                openPanel();
+            }
+        }
     } else {
         if (padHit(PAD_UL) || padHit(PAD_UR)) {
             cancelPanel();
@@ -707,7 +906,7 @@ void ExSelect_Update(float dt) {
     }
 
     /* 0x4177C4: entrada de jogador com crédito */
-    tryLateJoin();
+    if (!g_chosen) tryLateJoin();   /* Exceed2 0x416464: 0x417530 só com o painel fechado */
 
     /* 0x415E3C (chamado em 0x4177C9): cada painel apertado entra nos buffers
      * na ordem DL DR C UL UR; se houve toque, confere os códigos e toca 3-2. */
@@ -891,7 +1090,11 @@ static void drawNumber(int x, int y, int w, int h, int step, int value, int digi
     if (g_fontTex < 0) return;
     Texture_Bind(g_fontTex);
     glEnable(GL_TEXTURE_2D);
+    /* Exceed2 0x40716C: o teste é feito uma vez, no valor de entrada — nível 0
+     * desenha o glifo 10 ("?") em todas as casas ("??"); senão dígitos normais */
+    bool unknown = (value == 0);
     for (int i = 0; i < digits; i++) {
+        if (unknown) { drawDigit(x, y, w, h, 10); x -= step; continue; }
         drawDigit(x, y, w, h, value % 10);
         x -= step;
         value /= 10;
@@ -934,6 +1137,8 @@ static void drawPanel(void) {
         /* entrada: as linhas deslizam da esquerda (x = 7*pf - 70, -35 por linha)
          * e acendem (alpha = 0.05*pf + 0.5, -0.25 por linha) */
         BGA_DrawSlot(SEL2_BGA, pf + 570, bgSlot);
+        BGA_DrawSlot(SEL2_BGA, pf + 570, 0x18);   /* Exceed2 0x414EEF */
+        BGA_DrawSlot(SEL2_BGA, pf + 570, 0x19);
         float x = (float)pf * 7.0f - 70.0f;
         float y = 0.0f;
         float a = (float)pf * 0.05f + 0.5f;
@@ -973,6 +1178,8 @@ static void drawPanel(void) {
     else if (g_panelDir == 2) frame = k_panelDir2[idx] + pf - 60;
     else                      frame = k_panelIdle[idx];
     BGA_DrawSlot(SEL2_BGA, frame, bgSlot);
+    BGA_DrawSlot(SEL2_BGA, frame, 0x18);          /* Exceed2 0x41544D */
+    BGA_DrawSlot(SEL2_BGA, frame, 0x19);
 
     float t = (float)(pf - 60) / 10.0f;
     float hl = (g_panelDir == 0) ? 1.0f : (t > 1.0f ? 1.0f : t);
@@ -1061,6 +1268,7 @@ static void drawPlayerMods(int p) {
     drawModIcons(p, (t > 30) ? 30 : t);
 }
 
+#if 0   /* Exceed (exceed.exe 0x416760) — DESATIVADO */
 void ExSelect_Render(void) {
     if (g_game.bgaPicCount <= 0) return;
     /* [this+0x90] (0x416965..0x4169C4): 1.0 sem escolha; com o painel aberto
@@ -1183,4 +1391,174 @@ void ExSelect_Render(void) {
 
     /* 0x4170C0: com a música escolhida o quadro segue para o painel */
     if (g_chosen) drawPanel();
+}
+#endif
+
+/* ───────────────────────── Exceed2 (PIU32.EXE) ─────────────────────────────
+ * Camadas 43..46 do SELECT animam sozinhas (0x41EE90 no Begin: início/fim do
+ * laço; 0x41EDD0 desenha no contador próprio e avança, voltando ao início
+ * quando chega ao fim). */
+static const int k_loopSlot[4]  = { 0x2B, 0x2C, 0x2D, 0x2E };   /* 0x4135C4..0x413600 */
+static const int k_loopStart[4] = { 20, 20, 100, 100 };
+static const int k_loopEnd[4]   = { 220, 100, 220, 220 };
+static int g_loopCnt[4];
+
+static void drawSelfLoops(void) {
+    for (int i = 0; i < 4; i++) {
+        /* Slot 46 (light.spr) DESATIVADO: aponta para type2.tga (378,0)-(512,135),
+         * que no Exceed2 é o texto "ITEM BATTLE / HYBRID STEP". O código do
+         * original desenha o slot (0x41EDD0(0x2E)), mas no jogo original, segundo
+         * o usuário, só o logo aparece. Desvio documentado; o contador continua. */
+        if (k_loopSlot[i] != 0x2E)
+            BGA_DrawSlot(SEL_BGA, g_loopCnt[i], k_loopSlot[i]);
+        if (++g_loopCnt[i] >= k_loopEnd[i]) g_loopCnt[i] = k_loopStart[i];
+    }
+}
+
+/* 0x41482F..0x41485A: ângulo da roda suavizado pela tabela 0x4522C0,
+ * índice = trunc(0.8 * quadro), vezes ±2.769 (0x452308 / 0x45230C) */
+static const float k_wheelEase[9] = { 0.0f, 0.5f, 2.0f, 4.0f, 6.0f, 8.0f, 9.5f, 10.0f, 10.0f };
+
+/* 0x4176D0 (P1, slots 33..37) / 0x417870 (P2, slots 28..32): quadro t+360
+ * até 30, depois 390; ícones no quadro min(t, 30) */
+static void drawPlayerBlock2(int p, int t) {
+    if (!(g_joined & (1u << p))) return;
+    int first = (p == 0) ? 33 : 28;
+    int sf = (t > 30) ? 390 : t + 360;
+    for (int s = 0; s < 5; s++)
+        BGA_DrawSlot(SEL_BGA, sf, first + s);
+    drawModIcons(p, (t > 30) ? 30 : t);
+}
+
+/* 0x414E31..0x414E78: contador branco em (607,431) e preto em (605,433) */
+static void drawTimer2(void) {
+    int v = g_timeLeft < 0 ? 0 : g_timeLeft;
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    drawTimerNumber(0x25F, 0x1AF, v);
+    glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
+    drawTimerNumber(0x25D, 0x1B1, v);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+/* 0x414EBD..0x41597C: painel de dificuldade. Igual ao do Exceed, mais as
+ * camadas 0x18/0x19 do SELECT2 junto com o fundo (0x414EEF / 0x41544D). */
+static void drawPanel2(void) {
+    drawPanel();   /* fundo 31/33 + 0x18/0x19 (Exceed2), linhas, números e ícones */
+}
+
+void ExSelect_Render(void) {
+    if (g_game.bgaPicCount <= 0) return;
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    if (g_intro) {
+        /* 0x413B20: laços 43..46, as outras camadas 0..49 do SELECT no quadro
+         * +0x24; depois P2 e P1 no mesmo quadro */
+        BGA_SetColor(SEL_BGA, 1.0f, 1.0f);
+        drawSelfLoops();
+        for (int sl = 0; sl < 0x32; sl++)
+            if (sl < 0x2B || sl > 0x2E) BGA_DrawSlot(SEL_BGA, g_frame, sl);
+        drawPlayerBlock2(1, g_frame);
+        drawPlayerBlock2(0, g_frame);
+        return;
+    }
+
+    setProjection();                                     /* 0x41464B */
+    BGA_SetColor(SEL_BGA, 1.0f, 1.0f);
+    drawSelfLoops();                                     /* 0x41465C */
+    BGA_DrawSlot(SEL_BGA, g_frame % 240, 0);             /* 0x414681 */
+    BGA_DrawSlot(SEL_BGA, g_frame % 240, 1);
+    BGA_DrawSlot(SEL_BGA, g_frame % 240, 2);
+    BGA_DrawSlot(SEL_BGA, 30, 0x0E);
+    BGA_DrawSlot(SEL_BGA, 30, 0x12);
+    BGA_DrawSlot(SEL_BGA, (g_chFrame % 180) + 60, k_chGlowSlot[g_ch]);   /* 0x4146DB */
+
+    /* 0x41471F..0x414794: rótulo do canal */
+    int lf = k_chLabelFrame[g_ch], ls = k_chLabelSlot[g_ch];
+    if (g_chFrame < 30) {
+        BGA_DrawSlot(SEL_BGA, lf + (g_chDir == 0 ? 30 : g_chFrame), ls);
+        if (g_ch == g_chPrev)
+            BGA_DrawSlot(SEL_BGA, lf, ls);
+    } else {
+        BGA_DrawSlot(SEL_BGA, lf + 30, ls);
+    }
+
+    /* 0x414799..0x4147DD: brilho [+0x98] — 1.0, ou 1 - 0.05*t até 10 quadros
+     * de painel aberto e 0.5 depois */
+    float c = 1.0f;
+    if (g_chosen) c = (g_panelFrame > 10) ? 0.5f : 1.0f - (float)g_panelFrame * 0.05f;
+    BGA_SetColor(SEL_BGA, c, 1.0f);
+
+    /* 0x414809..0x414935: roda */
+    int cur = g_cursor[g_ch];
+    if (g_curFrame < 10) {
+        if (cur != g_cursorPrev[g_ch]) {
+            int ei = (int)((float)g_curFrame * 0.8f);
+            if (ei < 0) ei = 0;
+            if (ei > 8) ei = 8;
+            if (g_curDir == 1) {
+                drawCarousel(cur + 1, k_wheelEase[ei] * -2.769f, c, c, c, 1.0f);
+                BGA_DrawSlot(SEL_BGA, g_curFrame + 0x168, 4);
+            } else if (g_curDir == 2) {
+                drawCarousel(cur - 1, k_wheelEase[ei] * 2.769f, c, c, c, 1.0f);
+                BGA_DrawSlot(SEL_BGA, g_curFrame + 0x1E0, 5);
+            }
+        } else {
+            drawCarousel(cur, 0.0f, c, c, c, (float)g_curFrame * 0.1f);
+            BGA_DrawSlot(SEL_BGA, 30, 3);
+        }
+    } else {
+        drawCarousel(cur, 0.0f, c, c, c, 1.0f);
+        BGA_DrawSlot(SEL_BGA, 30, 3);
+    }
+
+    /* 0x4149E4..0x414AD3: rotação do canal (agora no SELECT2) ou fundo parado */
+    if (g_chFrame < 30 && g_chPrev != g_ch) {
+        if (g_chDir == 1) {
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x1E0, 0x33);
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x1E0, 0x34);
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x1E0, 0x37);
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x1E0, 0x38);
+        } else if (g_chDir == 2) {
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x168, 0x35);
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x168, 0x36);
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x168, 0x39);
+            BGA_DrawSlot(SEL2_BGA, g_chFrame + 0x168, 0x3A);
+        } else {
+            BGA_DrawSlot(SEL_BGA, 30, 0x18);
+        }
+    } else {
+        BGA_DrawSlot(SEL_BGA, 30, 0x18);
+        g_chDir = 0;
+    }
+
+    /* 0x414ADA..0x414BD3: banner central */
+    if (g_curFrame < 10) {
+        if (g_cursorPrev[g_ch] != cur) {
+            drawCenterBanner(cur, c, c, c, 1.0f);
+            drawCenterBanner(g_cursorPrev[g_ch], c, c, c, 1.0f - (float)g_curFrame * 0.1f);
+        } else {
+            drawCenterBanner(cur, 0.0f, 0.0f, 0.0f, 1.0f);
+            drawCenterBanner(cur, c, c, c, (float)g_curFrame * 0.1f);
+        }
+    } else {
+        drawCenterBanner(cur, c, c, c, 1.0f);
+        g_curDir = 0;
+    }
+
+    setOrtho();                                          /* 0x414BDD */
+
+    BGA_DrawSlot(SEL_BGA, g_chFrame % 240, 0x19);        /* 0x414BE3 */
+    BGA_DrawSlot(SEL_BGA, g_chFrame % 240, 0x1A);
+    BGA_DrawSlot(SEL_BGA, g_chFrame % 240, 0x1B);
+    BGA_DrawSlot(SEL_BGA, 30, 0x31);
+
+    drawPlayerBlock2(1, g_joinFrame[1]);                 /* 0x414C31 (+0x4C) */
+    drawPlayerBlock2(0, g_joinFrame[0]);                 /* 0x414CFA (+0x44) */
+
+    drawTimer2();                                        /* 0x414E31 */
+    BGA_SetColor(SEL_BGA, 1.0f, 1.0f);                   /* 0x414E7D */
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+    if (g_chosen) drawPanel2();                          /* 0x414EAC */
 }

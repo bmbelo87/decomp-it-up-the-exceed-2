@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "bga.h"
 
 extern int g_menuSelection;
 static int bga_activePic = -1;
@@ -11,8 +12,13 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t) {
     BGAKeyframe r;
     r.x = lerp(a->x, b->x, t);
     r.y = lerp(a->y, b->y, t);
-    r.hotx = a->hotx;
-    r.hoty = a->hoty;
+    /* Exceed2 0x41E963..0x41E9B5: o hot também é interpolado (A + (B-A)*t),
+     * no caminho comum de BGA2 e BGA3. Antes ficava o do keyframe A, o que
+     * fazia a entrada das cenas (ex.: PERFECT do 00.BGA, hot 20 -> 10) saltar. */
+    r.hotx = lerp(a->hotx, b->hotx, t);
+    r.hoty = lerp(a->hoty, b->hoty, t);
+    /* r.hotx = a->hotx; */
+    /* r.hoty = a->hoty; */
     r.scaleX = lerp(a->scaleX, b->scaleX, t);
     r.scaleY = lerp(a->scaleY, b->scaleY, t);
     if (a->scaleY == 0.0f && b->scaleY == 0.0f) r.scaleY = r.scaleX;
@@ -495,15 +501,44 @@ int findBGALoopEnd(void) {
 /* Exceed 0x41F754(rgb, a): multiplicador de cor do BGA (+0x11AAAC/+0x11AAB0),
  * aplicado só no desenho por slot (0x41F11C: RGB do keyframe * rgb, alpha * a).
  * Default 1.0 (0x41EE55/0x41EE61). s_slotRGB/s_slotA valem durante um DrawSlot. */
-static float s_picRGB[MAX_BGA_PICS];
+static float s_picRGB[MAX_BGA_PICS][3];   /* Exceed2 0x41EDB0: r, g, b separados */
 static float s_picA[MAX_BGA_PICS];
 static bool  s_picColorSet[MAX_BGA_PICS];
-static float s_slotRGB = 1.0f, s_slotA = 1.0f;
+static float s_slotRGB[3] = { 1.0f, 1.0f, 1.0f }, s_slotA = 1.0f;
 
 static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, float animT) {
     if (!state || state->type == 0 || state->a <= 0.01f) return;
+
+    /* Exceed2 BGA3 (PIU32.EXE 0x41e963 + ramo [obj]==3 em 0x41ea4b): o pivô de
+     * rotação/escala é (x, y) e a imagem fica em x - hot - w/2 (hot += w*0.5).
+     * Converte para a convenção do BGA2 (canto + pivô relativo ao canto). */
+    BGAKeyframe st3;
+    if (picVersion == 3) {
+        float w = 0.0f, h = 0.0f;
+        if (layer->isSPR) {
+            /* tamanho do objeto SPR (+0x10/+0x12) = extensão dos tiles a partir
+             * da origem: max(srcX+srcW) x max(srcY+srcH). Confere com os hot
+             * dos .bga (ro_bar 512x480 -> -256/-240, screen_s 640x375 -> -188). */
+            for (int t = 0; t < layer->sprTileCount; t++) {
+                int ti = layer->sprTileStart + t;
+                if (ti < 0 || ti >= g_game.sprTileCount) continue;
+                SPRTileDef* td = &g_game.sprTiles[ti];
+                if ((float)(td->srcX + td->srcW) > w) w = (float)(td->srcX + td->srcW);
+                if ((float)(td->srcY + td->srcH) > h) h = (float)(td->srcY + td->srcH);
+            }
+        } else if (layer->texId >= 0 && layer->texId < MAX_TEXTURES && g_game.textures[layer->texId].inUse) {
+            w = (float)g_game.textures[layer->texId].width;
+            h = (float)g_game.textures[layer->texId].height;
+        }
+        st3 = *state;
+        st3.hotx = state->hotx + w * 0.5f;
+        st3.hoty = state->hoty + h * 0.5f;
+        st3.x = state->x - st3.hotx;
+        st3.y = state->y - st3.hoty;
+        state = &st3;
+    }
     float alpha = state->a * s_slotA;
-    float renderR = state->r * s_slotRGB, renderG = state->g * s_slotRGB, renderB = state->b * s_slotRGB;
+    float renderR = state->r * s_slotRGB[0], renderG = state->g * s_slotRGB[1], renderB = state->b * s_slotRGB[2];
 
     glEnable(GL_BLEND);
     /* FUN_00401450 no original: 5 modos de blend
@@ -668,9 +703,10 @@ void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
  * já passou do último keyframe da camada (0x41F11C, ramo em 0x41F167). */
 int BGA_DrawSlot(int bgaIndex, int frame, int slot) {
     if (frame < 0) frame = 0;
-    if (slot < 0 || slot > 0x31) return 0;
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return 0;
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
+    /* Exceed: 0..49; Exceed2 BGA3: 0..99 (PIU32.EXE 0x41ed72) */
+    if (slot < 0 || slot > (pic->version == 3 ? 0x63 : 0x31) || slot >= MAX_BGA_LAYERS) return 0;
     int li;
     if (pic->slotCount == 0) {
         /* BGA vindo do RES (resource.c): o parser já mantém os slots vazios,
@@ -686,11 +722,13 @@ int BGA_DrawSlot(int bgaIndex, int frame, int slot) {
     if (layer->kfCount == 0 || frame < layer->keyframes[0].frame) return 0;
     if (frame >= layer->keyframes[layer->kfCount - 1].frame) return 1;
     if (s_picColorSet[bgaIndex]) {
-        s_slotRGB = s_picRGB[bgaIndex];
+        s_slotRGB[0] = s_picRGB[bgaIndex][0];
+        s_slotRGB[1] = s_picRGB[bgaIndex][1];
+        s_slotRGB[2] = s_picRGB[bgaIndex][2];
         s_slotA = s_picA[bgaIndex];
     }
     BGA_SetEventLayer(bgaIndex, frame, li);
-    s_slotRGB = 1.0f;
+    s_slotRGB[0] = s_slotRGB[1] = s_slotRGB[2] = 1.0f;
     s_slotA = 1.0f;
     return 0;
 }
@@ -698,9 +736,144 @@ int BGA_DrawSlot(int bgaIndex, int frame, int slot) {
 /* Exceed 0x41F754(rgb, a) — ver s_picRGB acima */
 void BGA_SetColor(int bgaIndex, float rgb, float a) {
     if (bgaIndex < 0 || bgaIndex >= MAX_BGA_PICS) return;
-    s_picRGB[bgaIndex] = rgb;
+    s_picRGB[bgaIndex][0] = s_picRGB[bgaIndex][1] = s_picRGB[bgaIndex][2] = rgb;
     s_picA[bgaIndex] = a;
     s_picColorSet[bgaIndex] = true;
+}
+
+/* Exceed2 0x41EDB0(r, g, b, a): multiplicador de cor do BGA com canais separados */
+void BGA_SetColor4(int bgaIndex, float r, float g, float b, float a) {
+    if (bgaIndex < 0 || bgaIndex >= MAX_BGA_PICS) return;
+    s_picRGB[bgaIndex][0] = r;
+    s_picRGB[bgaIndex][1] = g;
+    s_picRGB[bgaIndex][2] = b;
+    s_picA[bgaIndex] = a;
+    s_picColorSet[bgaIndex] = true;
+}
+
+/* ---------------------------------------------------------------------------
+ * Exceed2 BGA3 — cenas (PIU32.EXE). O nome é comparado pelo hash djb2 de
+ * 0x423650 (sensível a maiúsculas): strcmp equivale.
+ * ------------------------------------------------------------------------- */
+static BGAScene* bga_findScene(int bgaIndex, const char* name) {
+    if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount || !name) return NULL;
+    BGAPicture* pic = &g_game.bgaPics[bgaIndex];
+    for (int i = 0; i < pic->sceneCount; i++)
+        if (strcmp(pic->scenes[i].name, name) == 0) return &pic->scenes[i];
+    return NULL;
+}
+
+/* 0x41ece0: todos os slots no quadro (frame < 0 vira 0) */
+void BGA_DrawFrame(int bgaIndex, int frame) {
+    if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
+    if (frame < 0) frame = 0;
+    for (int slot = 0; slot < 100 && slot < MAX_BGA_LAYERS; slot++)
+        BGA_DrawSlot(bgaIndex, frame, slot);
+}
+
+/* 0x41f0f0(nome, desenha): desenha no quadro atual e avança.
+ * No fim (quadro >= fim): modo 0 -> 30000 (some), 1 -> volta, 2 -> segura no
+ * último, 3 -> passa a voltar (reverso até "volta"). */
+void BGA_ScenePlay(int bgaIndex, const char* name, bool draw) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    if (!sc) return;
+    if (draw) BGA_DrawFrame(bgaIndex, sc->cur);
+    if (sc->rev) {
+        sc->cur--;
+        if (sc->cur < sc->loop) { sc->rev = 0; sc->cur = sc->loop; }
+        return;
+    }
+    sc->cur++;
+    if (sc->cur < sc->end) return;
+    switch (sc->mode) {
+    case 0: sc->cur = 30000; break;
+    case 1: sc->cur = sc->loop; break;
+    case 2: sc->cur = sc->end - 1; break;
+    case 3: sc->rev = 1; sc->cur = sc->end - 1; break;
+    default: break;
+    }
+}
+
+/* 0x41f2e0: sem a cena ou em reverso -> true; senão quadro >= fim - 1 */
+bool BGA_SceneDone(int bgaIndex, const char* name) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    if (!sc || sc->rev) return true;
+    return sc->cur >= sc->end - 1;
+}
+
+/* 0x41f390: volta ao início */
+void BGA_SceneReset(int bgaIndex, const char* name) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    if (!sc) return;
+    sc->cur = sc->start;
+    sc->rev = 0;
+}
+
+/* 0x41F200(nome, deslocamento, desenha): desenha a cena no quadro início + deslocamento */
+void BGA_ScenePlayAt(int bgaIndex, const char* name, int offset) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    if (!sc) return;
+    BGA_DrawFrame(bgaIndex, sc->start + offset);
+}
+
+int BGA_SceneFrame(int bgaIndex, const char* name) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    return sc ? sc->cur : -1;
+}
+
+static BGALayer* bga_slotLayer(int bgaIndex, int slot) {
+    if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return NULL;
+    BGAPicture* pic = &g_game.bgaPics[bgaIndex];
+    if (slot < 0 || slot >= MAX_BGA_LAYERS) return NULL;
+    int li = slot;
+    if (pic->slotCount != 0) {
+        if (slot >= pic->slotCount) return NULL;
+        li = pic->slotLayer[slot];
+    }
+    if (li < 0 || li >= pic->layerCount) return NULL;
+    return &pic->layers[li];
+}
+
+/* 0x41ee30 */
+bool BGA_GetLayerSrc(int bgaIndex, int slot, BGALayerSrc* out) {
+    BGALayer* l = bga_slotLayer(bgaIndex, slot);
+    if (!l || !out) return false;
+    memcpy(out->filename, l->filename, sizeof(out->filename));
+    out->isSPR = l->isSPR;
+    out->sprTileStart = l->sprTileStart;
+    out->sprTileCount = l->sprTileCount;
+    out->texId = l->texId;
+    out->aniFrameCount = l->aniFrameCount;
+    out->patCols = l->patCols;
+    out->patRows = l->patRows;
+    out->patFlags = l->patFlags;
+    return true;
+}
+
+/* 0x41ee40: troca só a textura/SPR do slot; os keyframes ficam */
+void BGA_SetLayerSrc(int bgaIndex, int slot, const BGALayerSrc* src) {
+    BGALayer* l = bga_slotLayer(bgaIndex, slot);
+    if (!l || !src) return;
+    memcpy(l->filename, src->filename, sizeof(l->filename));
+    l->isSPR = src->isSPR;
+    l->sprTileStart = src->sprTileStart;
+    l->sprTileCount = src->sprTileCount;
+    l->texId = src->texId;
+    l->aniFrameCount = src->aniFrameCount;
+    l->patCols = src->patCols;
+    l->patRows = src->patRows;
+    l->patFlags = src->patFlags;
+}
+
+bool BGA_GetSlotPos(int bgaIndex, int frame, int slot, float* x, float* y) {
+    BGALayer* l = bga_slotLayer(bgaIndex, slot);
+    if (!l || l->kfCount == 0) return false;
+    if (frame < l->keyframes[0].frame || frame >= l->keyframes[l->kfCount - 1].frame) return false;
+    BGAKeyframe* st = interpolate_layer(l, frame, NULL);
+    if (!st || st->type == 0 || st->a <= 0.01f) return false;
+    *x = st->x;
+    *y = st->y;
+    return true;
 }
 
 /* HIPÓTESE DESCARTADA (26/09/2026): 0x41F754 não é escala, é cor — ver

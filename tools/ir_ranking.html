@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Exceed Internet Ranking</title>
+<!-- Versão local (sem servidor): o ranking fica no localStorage deste navegador.
+     Exportar/Importar usa o mesmo JSON de tools/ir_ranking.py ({nome, score, cursos, senha}).
+     Tabelas geradas a partir do exceed.exe (mixtable 0x0045C1A0, músicas 0x004551E0). -->
+<style>
+:root {
+  --ink: #0b0f1c; --panel: #131a2e; --line: #26304d; --text: #e7ebf7; --muted: #8d97b5;
+  --amber: #ffb627; --ok: #4ad98a; --bad: #ff6b6b;
+  --display: "Segoe UI", system-ui, sans-serif;
+  --body: "Segoe UI", system-ui, sans-serif;
+  --mono: Consolas, ui-monospace, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--ink); color: var(--text); font: 15px/1.55 var(--body); margin: 0; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 28px 16px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font: 600 12px var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+h1 { font: 700 clamp(28px, 6vw, 44px)/1.05 var(--display); margin: 0; }
+h2 { font: 700 20px var(--display); margin: 0; letter-spacing: .02em; }
+.lede { color: var(--muted); max-width: 62ch; margin: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 16px; min-width: 0; }
+form { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr) auto; gap: 12px; align-items: end; }
+@media (max-width: 600px) { form { grid-template-columns: 1fr; } }
+label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+input { font: 500 18px var(--mono); color: var(--text); background: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; width: 100%; text-transform: uppercase; letter-spacing: .08em; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+button { font: 700 15px var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--ink); background: var(--amber); border: 0; border-radius: 6px; padding: 12px 18px; cursor: pointer; }
+button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
+button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); padding: 8px 14px; font-size: 13px; }
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.cell { border-top: 1px solid var(--line); padding-top: 8px; min-width: 0; }
+.cell .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.cell .v { font: 500 15px var(--mono); overflow-wrap: anywhere; }
+.status { font-weight: 600; min-height: 1.5em; margin: 0; }
+.status.ok { color: var(--ok); } .status.bad { color: var(--bad); } .status.info { color: var(--muted); }
+.tablebox { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font: 600 11px var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); }
+td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.pos { font: 700 18px var(--display); color: var(--muted); width: 3rem; }
+tr:nth-child(1) td.pos { color: var(--amber); }
+td.name { font: 700 17px var(--display); letter-spacing: .08em; }
+td.score { font: 500 17px var(--mono); text-align: right; white-space: nowrap; }
+td.songs { color: var(--muted); font-size: 13px; min-width: 16rem; }
+td.del { width: 2rem; }
+td.del button { background: transparent; color: var(--muted); padding: 2px 8px; font-size: 16px; }
+td.del button:hover { color: var(--bad); }
+.empty { color: var(--muted); padding: 24px 10px; text-align: center; }
+.note { color: var(--muted); font-size: 13px; margin: 0; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.suglist { display: grid; gap: 8px; }
+.sug { display: grid; gap: 2px; text-align: left; text-transform: none; letter-spacing: 0; background: var(--ink); color: var(--text); border: 1px solid var(--amber); padding: 10px 12px; }
+.sugcode { font: 500 17px var(--mono); letter-spacing: .08em; color: var(--amber); }
+.sugsongs { font: 400 13px var(--body); color: var(--muted); overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Pump It Up · Exceed</span>
+    <h1>Internet Ranking</h1>
+    <p class="lede">Depois do estágio extra o jogo mostra uma senha de 16 caracteres. Cole ela aqui: a senha guarda a pontuação total e as quatro músicas tocadas, e o checksum confirma que ninguém mexeu nela.</p>
+  </header>
+
+  <section class="card" aria-labelledby="enviar">
+    <h2 id="enviar">Enviar senha</h2>
+    <form id="form" novalidate>
+      <label for="nome">Nome
+        <input id="nome" maxlength="4" autocomplete="off" placeholder="PUMP">
+      </label>
+      <label for="senha">Senha
+        <input id="senha" maxlength="19" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX">
+      </label>
+      <button id="enviarBtn" type="submit" disabled>Registrar</button>
+    </form>
+    <div class="readout">
+      <div class="cell"><div class="k">Pontuação</div><div class="v" id="rScore">—</div></div>
+      <div class="cell"><div class="k">1º estágio</div><div class="v" id="rC0">—</div></div>
+      <div class="cell"><div class="k">2º estágio</div><div class="v" id="rC1">—</div></div>
+      <div class="cell"><div class="k">3º estágio</div><div class="v" id="rC2">—</div></div>
+      <div class="cell"><div class="k">Extra</div><div class="v" id="rC3">—</div></div>
+    </div>
+    <p class="status info" id="status" role="status">Digite ou cole a senha para conferir.</p>
+    <div class="suglist" id="sugestoes" hidden></div>
+  </section>
+
+  <section class="card" aria-labelledby="ranking">
+    <h2 id="ranking">Ranking</h2>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>#</th><th>Nome</th><th style="text-align:right">Pontuação</th><th>Músicas</th><th></th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="tools">
+      <button type="button" class="ghost" id="exportBtn">Exportar JSON</button>
+      <button type="button" class="ghost" id="importBtn">Importar JSON</button>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
+    </div>
+    <p class="note">O ranking fica salvo só neste navegador. Use Exportar/Importar para levar para outro computador; o arquivo é o mesmo formato de <code>tools/ir_ranking.py</code>. Confira a pontuação: o checksum do jogo só protege parte dela.</p>
+  </section>
+</div>
+
+<script>
+(() => {
+  const MIX = Uint8Array.from(atob("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"), c => c.charCodeAt(0));
+  const SONGS = [["101", "Ignition Starts!"], ["102", "Hypnosis"], ["104", "Passion"], ["108", "Come on Please"], ["109", "Funky Tonight"], ["112", "Another Truth"], ["202", "HATE"], ["203", "Koul"], ["204", "Final Audition"], ["205", "Extravaganza"], ["208", "Fighting Spirit"], ["212", "Com'Back"], ["301", "Final Audition 2"], ["302", "Naissance"], ["303", "Turkey March"], ["306", "Nightmare"], ["310", "She Likes Pizza"], ["311", "Pumping Up"], ["312", "Don't bother me"], ["318", "We are"], ["401", "Oh! Rosa!"], ["402", "First Love"], ["403", "Betrayer"], ["404", "Solitary"], ["405", "Mr. Larpus"], ["413", "Run!"], ["414", "Run to you"], ["501", "Pump Jump"], ["503", "Rolling Christmas"], ["504", "All I want for X-Mas"], ["505", "Beethoven Virus"], ["507", "Come back to me"], ["508", "As I Told You"], ["516", "Slam"], ["517", "Space Fantasy"], ["701", "Dr. M"], ["703", "Get Your Groove On"], ["704", "Love is a Danger Zone"], ["705", "Maria"], ["711", "Winter"], ["712", "Will-O-The-Wisp"], ["714", "Oy Oy Oy"], ["719", "Go Away"], ["721", "Gotta be Kidding!"], ["730", "PERFECT!"], ["735", "Vook"], ["736", "Csikos' Post"], ["801", "Bambole"], ["802", "Bee"], ["803", "Burning Krypt"], ["804", "Can you feel dis or dat"], ["805", "Clap your hands"], ["806", "Conga"], ["807", "D Gang"], ["808", "DJ Nightmare"], ["809", "Eres Para Mi"], ["810", "Fiesta Macarena Pt. 1"], ["811", "Hello"], ["812", "On your side"], ["813", "Everybody"], ["814", "Join The Party"], ["815", "Lay it down"], ["816", "Let The Sunshine"], ["817", "Lovething"], ["818", "Mexi Mexi"], ["819", "You don't wanna run up!"], ["820", "Beat of the War"], ["821", "Empire of the sun"], ["823", "Get The Party Started"], ["826", "Come to me"], ["902", "Circus Magic"], ["906", "Starian"], ["911", "Chicken Wing"], ["913", "Radezky CanCan"], ["915", "Loner"], ["916", "Monkey Magic"], ["921", "Pierrot"], ["922", "Final Audition Ep. 1"], ["A01", "Final Audition 3"], ["A02", "Naissance 2"], ["A03", "Monkey Fingers"], ["A04", "Blazing"], ["A05", "Pump me Amadeus"], ["A06", "X Treme"], ["A07", "Get Up!"], ["A08", "Diginity"], ["A09", "Shake that bootie"], ["A10", "Valenti"], ["A11", "What do you really want?"], ["A12", "Go"], ["A13", "Flamenco"], ["A14", "Kiss me"], ["A15", "Essa Maneira"], ["A16", "Ba Be Loo Be Ra"], ["A17", "La Cubanita"], ["A18", "Shake it up"], ["A19", "One Love"], ["A20", "Power of Dream"], ["A21", "Watch out"], ["A22", "Fiesta"], ["A23", "Soca make yuh ram ram"], ["A24", "Born to be Alive"], ["A25", "Xibom Bombom"], ["A26", "Oh! Rosa! (Spanish)"], ["A27", "First Love (Spanish)"]];
+  const POS = [10, 24, 33, 36, 49, 56, 62, 75];
+  const MASKS = [0x0F, 0xF0, 0xAA, 0x33, 0xCC, 0x66, 0x99, 0x55];
+  const CHARS = "0123TMSPBCLRAKDFIHGJ687O54EQV9UNWXYZ";
+  const STORE_KEY = "exceed_ir_ranking";
+
+  // Port do Decode do exceed.exe (0x421C00) + checksum retail (0x4222C7)
+  function decode(code) {
+    const bits = [];
+    for (const ch of code.toUpperCase()) {
+      let p = CHARS.indexOf(ch);
+      if (p < 0) continue;
+      p %= 32;
+      for (let b = 4; b >= 0; b--) bits.push((p >> b) & 1);
+    }
+    if (bits.length !== 80) return null;
+    let mp = 0;
+    POS.forEach((p, k) => { mp |= bits[p] << (7 - k); });
+    POS.forEach((p, k) => { bits.splice(p - k, 1); });
+    if (mp >= 64) return null;
+    const bits2 = new Array(72).fill(0);
+    for (let i = 0; i < 72; i++) bits2[MIX[mp * 72 + i]] = bits[i];
+    const cb = [];
+    for (let i = 0; i < 72; i += 8) {
+      let v = 0;
+      for (let j = 0; j < 8; j++) v = (v << 1) | bits2[i + j];
+      cb.push(v ^ MASKS[mp % 8]);
+    }
+    const score = (cb[0] | (cb[1] << 8) | (cb[2] << 16) | (cb[3] << 24)) >>> 0;
+    let chk = cb[8];
+    for (let i = 0; i < 4; i++) chk |= (cb[4 + i] & 0x80) << (1 + i);
+    const course = cb.slice(4, 8).map(c => c & 0x7F);
+    const valid = chk === ((score + course[0] + course[1] + course[2] + course[3]) & 0xFFF);
+    return { score, course, valid };
+  }
+  // Caracteres que a fonte do jogo deixa parecidos mas valem bits diferentes
+  const LOOKALIKE = { "O": "0DQ", "0": "OD", "D": "O0", "Q": "O0", "I": "1", "1": "I",
+    "S": "5", "5": "S", "B": "8", "8": "B", "Z": "2", "2": "Z", "G": "6", "6": "G",
+    "U": "V", "V": "U", "N": "M", "M": "N" };
+  function suggest(raw) {
+    const out = new Map();
+    const tryCode = s => { const d = decode(s); if (d && d.valid && !out.has(s)) out.set(s, d); };
+    const pos = [...raw].map((c, i) => [i, LOOKALIKE[c] || ""]).filter(p => p[1]);
+    for (const [i, alts] of pos) for (const a of alts) {
+      const one = raw.slice(0, i) + a + raw.slice(i + 1);
+      tryCode(one);
+      for (const [j, alts2] of pos) if (j > i) for (const b of alts2)
+        tryCode(one.slice(0, j) + b + one.slice(j + 1));
+    }
+    return [...out.entries()].slice(0, 6);
+  }
+  const songName = i => SONGS[i] ? SONGS[i][1] : "Música desconhecida (" + i + ")";
+  const fmt = n => n.toLocaleString("pt-BR");
+  const pretty = raw => raw.replace(/(.{4})(?=.)/g, "$1-");
+
+  // Armazenamento local (localStorage pode falhar em modo privado: cai para memória)
+  let mem = [];
+  function loadDb() {
+    try { const s = localStorage.getItem(STORE_KEY); if (s) mem = JSON.parse(s) || []; } catch (e) {}
+    return mem;
+  }
+  function saveDb() {
+    mem.sort((a, b) => b.score - a.score);
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(mem)); } catch (e) {}
+  }
+  const keyOf = e => e.score + "-" + (e.cursos || []).join(".");
+
+  const $ = id => document.getElementById(id);
+  const nome = $("nome"), senha = $("senha"), btn = $("enviarBtn"), status = $("status");
+  let decoded = null;
+
+  function setStatus(text, kind) { status.textContent = text; status.className = "status " + kind; }
+  function refreshButton() { btn.disabled = !decoded || !decoded.valid; }
+
+  function showSuggestions(list) {
+    const box = $("sugestoes");
+    box.textContent = "";
+    box.hidden = !list.length;
+    for (const [code, d] of list) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "sug";
+      const c = document.createElement("span"); c.className = "sugcode"; c.textContent = pretty(code);
+      const s = document.createElement("span"); s.className = "sugsongs";
+      s.textContent = fmt(d.score) + " pts · " + d.course.map(songName).join(" · ");
+      b.append(c, s);
+      b.addEventListener("click", () => { senha.value = pretty(code); senha.dispatchEvent(new Event("input")); senha.focus(); });
+      box.appendChild(b);
+    }
+  }
+
+  senha.addEventListener("input", () => {
+    const raw = senha.value.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 16);
+    showSuggestions([]);
+    senha.value = pretty(raw);
+    decoded = raw.length === 16 ? decode(raw) : null;
+    const cells = ["rC0", "rC1", "rC2", "rC3"];
+    if (raw.length === 16 && !decoded) {
+      $("rScore").textContent = "—";
+      cells.forEach(c => $(c).textContent = "—");
+      const sug = suggest(raw);
+      setStatus(sug.length ? "Essa senha não decodifica. Provavelmente algum caractere parecido foi trocado; veja as sugestões abaixo."
+                           : "Essa senha não decodifica: confira a senha na tela do jogo, caractere por caractere.", "bad");
+      showSuggestions(sug);
+    } else if (!decoded) {
+      $("rScore").textContent = "—";
+      cells.forEach(c => $(c).textContent = "—");
+      setStatus(raw.length ? "Faltam " + (16 - raw.length) + " caracteres." : "Digite ou cole a senha para conferir.", "info");
+    } else {
+      $("rScore").textContent = fmt(decoded.score);
+      cells.forEach((c, i) => $(c).textContent = SONGS[decoded.course[i]] ? SONGS[decoded.course[i]][0] + " · " + songName(decoded.course[i]) : songName(decoded.course[i]));
+      if (!decoded.valid) {
+        const sug = suggest(raw);
+        setStatus(sug.length ? "Checksum inválido. Provavelmente algum caractere parecido foi trocado; veja as sugestões abaixo."
+                             : "Checksum inválido: confira a senha na tela do jogo, caractere por caractere.", "bad");
+        showSuggestions(sug);
+      } else setStatus("Senha válida.", "ok");
+    }
+    refreshButton();
+  });
+  nome.addEventListener("input", () => { nome.value = nome.value.toUpperCase().slice(0, 4); });
+
+  $("form").addEventListener("submit", ev => {
+    ev.preventDefault();
+    if (btn.disabled) return;
+    const n = (nome.value.trim() || "PUMP").toUpperCase().slice(0, 4);
+    const entry = { nome: n, score: decoded.score, cursos: decoded.course, senha: senha.value.replace(/-/g, "") };
+    if (mem.some(e => keyOf(e) === keyOf(entry))) {
+      setStatus("Essa partida já está no ranking.", "info");
+      return;
+    }
+    mem.push(entry); saveDb(); render();
+    setStatus("Registrado: " + n + " com " + fmt(entry.score) + " pontos.", "ok");
+    senha.value = ""; decoded = null; refreshButton();
+  });
+
+  function render() {
+    const tb = $("tbody");
+    tb.textContent = "";
+    if (!mem.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5; td.className = "empty";
+      td.textContent = "Nenhuma senha registrada ainda. Termine uma partida com o estágio extra e envie a primeira.";
+      tr.appendChild(td); tb.appendChild(tr);
+      return;
+    }
+    mem.forEach((r, i) => {
+      const tr = document.createElement("tr");
+      const cells = [
+        ["pos", String(i + 1)],
+        ["name", String(r.nome || "????").slice(0, 4)],
+        ["score", fmt(Number(r.score) || 0)],
+        ["songs", Array.isArray(r.cursos) ? r.cursos.map(songName).join(" · ") : ""],
+      ];
+      for (const [cls, text] of cells) {
+        const td = document.createElement("td");
+        td.className = cls; td.textContent = text; tr.appendChild(td);
+      }
+      const td = document.createElement("td"); td.className = "del";
+      const b = document.createElement("button"); b.type = "button"; b.title = "Remover"; b.textContent = "×";
+      b.addEventListener("click", () => {
+        if (!confirm("Remover " + (r.nome || "????") + " (" + fmt(Number(r.score) || 0) + ")?")) return;
+        mem.splice(i, 1); saveDb(); render();
+      });
+      td.appendChild(b); tr.appendChild(td);
+      tb.appendChild(tr);
+    });
+  }
+
+  $("exportBtn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(mem, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "ir_ranking.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  $("importBtn").addEventListener("click", () => $("importFile").click());
+  $("importFile").addEventListener("change", async ev => {
+    const f = ev.target.files[0]; ev.target.value = "";
+    if (!f) return;
+    try {
+      const list = JSON.parse(await f.text());
+      if (!Array.isArray(list)) throw 0;
+      let added = 0;
+      for (const e of list) {
+        if (!e || typeof e.score !== "number" || !Array.isArray(e.cursos)) continue;
+        if (mem.some(m => keyOf(m) === keyOf(e))) continue;
+        mem.push({ nome: String(e.nome || "PUMP").toUpperCase().slice(0, 8), score: e.score, cursos: e.cursos, senha: String(e.senha || "") });
+        added++;
+      }
+      saveDb(); render();
+      setStatus("Importado: " + added + " partida(s) nova(s).", "ok");
+    } catch (e) {
+      setStatus("Arquivo inválido: esperado o JSON do ranking (lista de {nome, score, cursos, senha}).", "bad");
+    }
+  });
+
+  loadDb(); render();
+})();
+</script>
+</body>
+</html>

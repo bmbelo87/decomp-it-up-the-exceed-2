@@ -78,15 +78,8 @@ static void drawRow(int k, float y) {
 
 void Highscore_Enter(void) {
     char path[MAX_PATH];
-    memset(g_eeprom, 0, sizeof(g_eeprom));
-    snprintf(path, sizeof(path), "%s/eeprom.bin", g_game.currentDirectory);
-    FILE* f = fopen(path, "rb");
-    if (f) {
-        fread(g_eeprom, 1, sizeof(g_eeprom), f);
-        fclose(f);
-    } else {
-        Log_Print("HIGHSCORE: '%s' não abriu\n", path);
-    }
+    /* Exceed2: ranking da imagem do eeprom_x2.c (PIUEXCEED2.INI, +0x74B/+0x79B) */
+    memcpy(g_eeprom, Eeprom2_Data(), sizeof(g_eeprom));
 
     snprintf(path, sizeof(path), "%s/BGA/BFONT.DAT", g_game.currentDirectory);
     g_bfontTex = -1;

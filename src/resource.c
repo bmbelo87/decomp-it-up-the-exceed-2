@@ -47,6 +47,7 @@ static void res_xor_decrypt(uint8_t* data, uint32_t size) {
  *   XOR (0x423234) e zlib.
  * ------------------------------------------------------------------------- */
 #define RESPACK_MAGIC   "RESPACK\x1A"
+#define RESPAC2_MAGIC   "RESPAC2\x1A"   /* Exceed2: PIU32.EXE 0x421c40 */
 #define RESPACK_ENTRY   0x12C
 
 static const uint8_t g_packT0[8] = { 0xF0,0x78,0xF9,0xFD,0x1C,0x20,0xC2,0x02 }; /* 0x411dc4 */
@@ -117,10 +118,83 @@ static void pack_decrypt(uint8_t* data, uint32_t len, const uint8_t* key16) {
     }
 }
 
+/* PIU32.EXE 0x420610: out[i] = in[i] ^ k[i&3], k[j] = (k[j] + i) ^ 0x1C.
+ * Os 4 bytes iniciais de k vêm de 0x43f220 (stub de dongle, senha 0xA5A5);
+ * os .AUD/.PNZ do jogo foram cifrados com resposta 0 (recuperado por texto
+ * conhecido e conferido com o Adler-32 de 0x423b40). */
+static void x2_derive_key(int n, const uint8_t* in, uint8_t* out) {
+    uint8_t k[4] = { 0, 0, 0, 0 };
+    for (int i = 0; i < n; i++) {
+        out[i] = (uint8_t)(in[i] ^ k[i & 3]);
+        k[i & 3] = (uint8_t)((k[i & 3] + i) ^ 0x1C);
+    }
+}
+
+/* zlib adler32(1, ...) — PIU32.EXE 0x423b40 */
+static uint32_t enc2_adler32(const uint8_t* d, uint32_t n) {
+    uint32_t a = 1, b = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        a = (a + d[i]) % 65521;
+        b = (b + a) % 65521;
+    }
+    return (b << 16) | a;
+}
+
+static uint8_t enc2_bitrev(uint8_t b) {   /* 0x421280 */
+    uint8_t r = 0;
+    for (int i = 0; i < 8; i++) { r = (uint8_t)((r << 1) | (b & 1)); b >>= 1; }
+    return r;
+}
+
+/* ENC2 (.AUD / .PNZ).
+ *   Exceed2 (PIU32.EXE 0x421390): hdr[0x8C], chave16, hdr[0x88] bytes, u32
+ *     semente (= Adler-32 do resultado), T[0x400], dados[hdr[0x84]].
+ *     K = 0x420610(chave16); tabela[j] = T[j] ^ K[j&15] (0x4212b0);
+ *     saida[i] = bitrev(src[i]) ^ tabela[(semente+i) & 0x3FF] (0x421320).
+ *   Exceed (exceed.exe 0x420390): sem chave16; tabela = 0x411DBC sobre T.
+ * O cabeçalho não diferencia os dois: tenta o Exceed2 e confere o Adler-32. */
+uint8_t* Resource_DecryptENC2(const uint8_t* buf, uint32_t fileSize, uint32_t* outSize) {
+    if (fileSize < 0x8C || memcmp(buf, "ENC2", 4) != 0) return NULL;
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t size = *(const uint32_t*)(buf + 0x84);
+        uint32_t off = 0x8C + (pass == 0 ? 0x10 : 0) + *(const uint32_t*)(buf + 0x88);
+        if (off + 4 + 0x400 > fileSize) continue;
+        uint32_t avail = fileSize - off - 4 - 0x400;
+        if (size > avail) size = avail;
+        uint32_t seed = *(const uint32_t*)(buf + off);
+        uint8_t table[0x400];
+        if (pass == 0) {
+            uint8_t K[16];
+            x2_derive_key(16, buf + 0x8C, K);
+            for (int j = 0; j < 0x400; j++) table[j] = (uint8_t)(buf[off + 4 + j] ^ K[j & 15]);
+        } else {
+            for (int k = 0; k < 0x400; k += 16)
+                RESPACK_DeriveKey16(buf + off + 4 + k, table + k);
+        }
+        uint8_t* dec = (uint8_t*)malloc(size ? size : 1);
+        if (!dec) return NULL;
+        const uint8_t* src = buf + off + 4 + 0x400;
+        for (uint32_t i = 0; i < size; i++)
+            dec[i] = enc2_bitrev(src[i]) ^ table[(seed + i) & 0x3FF];
+        if (pass == 1 || enc2_adler32(dec, size) == seed) {
+            *outSize = size;
+            return dec;
+        }
+        free(dec);
+    }
+    return NULL;
+}
+
 /* Decifra e descomprime todas as entradas; res->data passa a ser o bloco
  * descomprimido e entries[].offset/size apontam dentro dele. */
 static bool respack_load(RESArchive* res) {
     uint8_t* d = res->data;
+    int isX2 = memcmp(d, RESPAC2_MAGIC, 8) == 0;
+    /* Exceed2: XOR dos dados só com o byte 9 != 0 (0x421cc9, [0xC9B284]);
+     * chave = entrada ^ G, G = 0x420610(cabeçalho 0x18..0x27) (0x421b90) */
+    int x2Crypt = isX2 && d[9] != 0;
+    uint8_t x2G[16];
+    if (isX2) x2_derive_key(16, d + 0x18, x2G);
     int n = (int)*(uint32_t*)(d + 0x0C);
     uint32_t hdr = (*(uint32_t*)(d + 0x18) == 0) ? 0x28 : 0x18;
     uint32_t idxSize = (uint32_t)n * RESPACK_ENTRY;
@@ -150,7 +224,16 @@ static bool respack_load(RESArchive* res) {
         uint8_t* blob = (uint8_t*)malloc(cSize ? cSize : 1);
         if (!blob) { free(idx); free(out); return false; }
         memcpy(blob, d + base + off, cSize);
-        pack_decrypt(blob, cSize, ent + 0x118);
+        if (!isX2) {
+            pack_decrypt(blob, cSize, ent + 0x118);
+        } else if (x2Crypt) {
+            uint8_t k[16];
+            for (int i = 0; i < 16; i++) k[i] = (uint8_t)(ent[0x118 + i] ^ x2G[i]);
+            for (uint32_t i = 0; i < cSize; i++) {
+                blob[i] ^= k[i & 15];
+                k[i & 15] = (uint8_t)(k[i & 15] + 0x54);
+            }
+        }
         uint32_t got = rawSize;
         int zr = zlib_decompress(blob, cSize, out + pos, &got);
         free(blob);
@@ -241,7 +324,8 @@ bool RES_Open(const char* path) {
     }
     fclose(f);
 
-    if (res->fileSize >= 0x28 && memcmp(res->data, RESPACK_MAGIC, 8) == 0) {
+    if (res->fileSize >= 0x28 && (memcmp(res->data, RESPACK_MAGIC, 8) == 0 ||
+                                    memcmp(res->data, RESPAC2_MAGIC, 8) == 0)) {
         if (!respack_load(res)) {
             Log_Print("RESPACK: falha ao abrir '%s'\n", path);
             free(res->data); free(res->entries); free(res); return false;
@@ -599,6 +683,114 @@ static bool isValidBGA(const uint8_t* data, uint32_t size) {
     return (memcmp(data, "BGA2", 4) == 0) || (memcmp(data, "BGA", 3) == 0);
 }
 
+/* ---------------------------------------------------------------------------
+ * BGA3 — Exceed2 (PIU32.EXE 0x41e190, chamado por 0x41dce0 com o byte 3 == '3').
+ *   0x00 "BGA3", 0x04 3 x u32 (não lidos pelo carregador além do bloco de 0xC)
+ *   100 x { nome[0x40], s32 n (< 0 -> 0), n x keyframe de 0x64 bytes }
+ *     keyframe (layout interno, igual ao que 0x41dea0 monta a partir do BGA2):
+ *       +0 s16 quadro, +2 s16 grupo, +4 s16 interp., +6 s16 blend,
+ *       +8 x, +C y, +10 hotx, +14 hoty, +18 sx, +1C sy, +20 rot, +24/+28 rot
+ *       (outros eixos), +2C r g b a, +3C.. não usados aqui.
+ *   "SCENE1", u32 n, n x cena de 0x50 bytes (ver BGAScene).
+ * 0x41eee0 expande os grupos: +2 == 1 continua o grupo; o keyframe que fecha
+ * repete [início..ele] max(+2,1) vezes (0 -> 1, último com 1 -> 1), deslocando
+ * o quadro pelo vão do grupo; no resultado +2 vira 0 quando != 1.
+ * ------------------------------------------------------------------------- */
+static void bga3_emit(BGALayer* layer, const uint8_t* r, int frameAdd) {
+    if (layer->kfCount >= MAX_BGA_KEYFRAMES) return;
+    BGAKeyframe* kf = &layer->keyframes[layer->kfCount++];
+    int16_t grp = *(const int16_t*)(r + 2);
+    kf->frame = (int)*(const int16_t*)(r + 0) + frameAdd;
+    kf->type = (grp == 1) ? 1 : 0;
+    kf->blendMode = (int)*(const int16_t*)(r + 6);
+    kf->x = *(const float*)(r + 0x08);
+    kf->y = *(const float*)(r + 0x0C);
+    kf->hotx = *(const float*)(r + 0x10);
+    kf->hoty = *(const float*)(r + 0x14);
+    kf->scaleX = *(const float*)(r + 0x18);
+    kf->scaleY = *(const float*)(r + 0x1C);
+    kf->rotation = *(const float*)(r + 0x20);   /* eixo Z: hipótese (BGA2 grava a rotação aqui) */
+    kf->r = *(const float*)(r + 0x2C);
+    kf->g = *(const float*)(r + 0x30);
+    kf->b = *(const float*)(r + 0x34);
+    kf->a = *(const float*)(r + 0x38);
+    kf->z_order = 0;
+}
+
+static bool parseBGA3(const uint8_t* d, uint32_t size, BGAPicture* bga) {
+    bga->version = 3;
+    bga->scaleX = bga->scaleY = 1.0f;
+    uint32_t pos = 16;
+    for (int slot = 0; slot < 100; slot++) {
+        if (pos + 0x44 > size) return false;
+        char name[64];
+        memcpy(name, d + pos, 64);
+        name[63] = '\0';
+        int n = *(const int32_t*)(d + pos + 0x40);
+        if (n < 0) n = 0;
+        pos += 0x44;
+        if (pos + (uint32_t)n * 0x64 > size) return false;
+        const uint8_t* recs = d + pos;
+        pos += (uint32_t)n * 0x64;
+
+        if (slot >= MAX_BGA_LAYERS) {
+            if (n > 0) Log_Print("BGA3: slot %d '%s' ignorado (MAX_BGA_LAYERS)\n", slot, name);
+            continue;
+        }
+        /* slots vazios contam (índice de camada == slot, como no BGA2 do RES) */
+        BGALayer* layer = &bga->layers[slot];
+        bga->layerCount = slot + 1;
+        if (name[0] == '\0' || n == 0) continue;
+
+        for (int ci = 0; name[ci]; ci++)
+            if (name[ci] >= 'A' && name[ci] <= 'Z') name[ci] = (char)(name[ci] + 32);
+        strncpy(layer->filename, name, sizeof(layer->filename) - 1);
+        const char* dot = strrchr(name, '.');
+        layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
+
+        /* 0x41eee0 */
+        for (int i = 0; i < n; i++) {
+            int16_t g = *(const int16_t*)(recs + i * 0x64 + 2);
+            int rep = (g == 1) ? 0 : (g == 0 ? 1 : g);
+            if (i == n - 1 && rep == 0) rep = 1;
+            if (rep == 0) continue;
+            int j = i;
+            while (j > 0 && *(const int16_t*)(recs + (j - 1) * 0x64 + 2) == 1) j--;
+            if (j >= i) continue;
+            int span = *(const int16_t*)(recs + i * 0x64) - *(const int16_t*)(recs + j * 0x64);
+            for (int k = 0; k < rep; k++)
+                for (int m = j; m <= i; m++)
+                    bga3_emit(layer, recs + m * 0x64, k * span);
+        }
+        if (layer->kfCount > 0) {
+            int maxF = layer->keyframes[layer->kfCount - 1].frame;
+            if (maxF > bga->maxFrame) bga->maxFrame = maxF;
+        }
+        Log_Print("BGA3: slot %d '%s' %s kf=%d->%d\n", slot, name, layer->isSPR ? "SPR" : "TGA", n, layer->kfCount);
+    }
+
+    /* 0x41e48a: "SCENE1" + cenas */
+    if (pos + 10 <= size && memcmp(d + pos, "SCENE1", 6) == 0) {
+        pos += 6;
+        uint32_t n = *(const uint32_t*)(d + pos);
+        pos += 4;
+        for (uint32_t i = 0; i < n && pos + 0x50 <= size; i++, pos += 0x50) {
+            if (bga->sceneCount >= MAX_BGA_SCENES) break;
+            BGAScene* sc = &bga->scenes[bga->sceneCount++];
+            memcpy(sc->name, d + pos + 4, 63);
+            sc->name[63] = '\0';
+            sc->start = *(const int16_t*)(d + pos + 0x44);
+            sc->end   = *(const int16_t*)(d + pos + 0x46);
+            sc->loop  = *(const int16_t*)(d + pos + 0x48);
+            sc->mode  = *(const int32_t*)(d + pos + 0x4C);
+            sc->cur = sc->start;        /* 0x41e504 */
+            sc->rev = 0;
+            Log_Print("BGA3: cena '%s' %d..%d volta=%d modo=%d\n", sc->name, sc->start, sc->end, sc->loop, sc->mode);
+        }
+    }
+    return true;
+}
+
 static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
     uint32_t bgaSize = RES_GetSize(bgaIdx);
     uint8_t* bgaData = RES_ReadAlloc(bgaIdx);
@@ -615,6 +807,15 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
     BGAPicture* bga = &g_game.bgaPics[g_game.bgaPicCount];
     memset(bga, 0, sizeof(BGAPicture));
     snprintf(bga->name, sizeof(bga->name), "%s", bgaName);
+
+    if (memcmp(bgaData, "BGA3", 4) == 0) {
+        bool ok = parseBGA3(bgaData, bgaSize, bga);
+        free(bgaData);
+        if (!ok) return false;
+        g_game.bgaPicCount++;
+        Log_Print("BGA: loaded '%s' (v3, %d slots, %d cenas)\n", bgaName, bga->layerCount, bga->sceneCount);
+        return true;
+    }
 
     if (isBGA2) {
         bga->version = 2;
@@ -1328,27 +1529,8 @@ int Resource_LoadPNZ(const char* path) {
 
     uint32_t decSize = 0;
     uint8_t* dec = NULL;
-    if (fileSize >= 0x90 && memcmp(buf, "ENC2", 4) == 0) {
-        /* Exceed: mesmo ENC2 dos .AUD (exceed.exe 0x420390) — após hdr[0x88]
-         * vêm a semente, um bloco de 0x400 bytes (tabela via 0x411DBC em
-         * fatias de 16) e hdr[0x84] bytes de dados. */
-        uint32_t size = *(uint32_t*)(buf + 0x84);
-        uint32_t off = 0x8C + *(uint32_t*)(buf + 0x88);
-        if (off + 4 + 0x400 <= (uint32_t)fileSize) {
-            uint32_t avail = (uint32_t)fileSize - off - 4 - 0x400;
-            if (size > avail) size = avail;
-            uint32_t seed2 = *(uint32_t*)(buf + off);
-            uint8_t table[0x400];
-            for (int k = 0; k < 0x400; k += 16)
-                RESPACK_DeriveKey16(buf + off + 4 + k, table + k);
-            dec = (uint8_t*)malloc(size ? size : 1);
-            if (dec) {
-                const uint8_t* src = buf + off + 4 + 0x400;
-                for (uint32_t i = 0; i < size; i++)
-                    dec[i] = bit_reverse(src[i]) ^ table[(seed2 + i) & 0x3FF];
-                decSize = size;
-            }
-        }
+    if (fileSize >= 0x8C && memcmp(buf, "ENC2", 4) == 0) {
+        dec = Resource_DecryptENC2(buf, (uint32_t)fileSize, &decSize);
     } else {
         dec = Resource_DecryptENC1(buf, (uint32_t)fileSize, &decSize);
     }
@@ -1405,6 +1587,7 @@ void Resource_ClearBGA(void)
     g_fontArrow545 = -1;
     g_fontArrowETC = -1;
     g_fontArrowF   = -1;
+    g_fontSpark    = -1;
 }
 
 int Resource_SwitchBGA(const char* datName)
@@ -1625,6 +1808,7 @@ int g_fontArrow544 = -1;
 int g_fontArrow545 = -1;
 int g_fontArrowETC = -1;
 int g_fontArrowF = -1;
+int g_fontSpark = -1;   /* Exceed2: spark.spr (TYPE ani, stepfx0..4), [obj+0x34194] */
 
 void Resource_LoadFontAndArrows(const char* datPath) {
     if (!RES_Open(datPath)) return;
@@ -1651,6 +1835,10 @@ void Resource_LoadFontAndArrows(const char* datPath) {
     SPR_LoadSP2("arrowETC.sp2", NULL, NULL, NULL);
     g_fontArrowF = g_game.sprTileCount;
     SPR_LoadSPR("arrowf.spr", NULL, NULL, NULL);
+    /* Exceed2 0x405A16: spark.spr */
+    g_fontSpark = g_game.sprTileCount;
+    SPR_LoadSPR("spark.spr", NULL, NULL, NULL);
+    if (g_game.sprTileCount == g_fontSpark) g_fontSpark = -1;
 
     g_fontSpr01 = g_game.sprTileCount;
     SPR_LoadSPR("01.spr", NULL, NULL, NULL);
@@ -1717,4 +1905,31 @@ void Resource_LoadFontAndArrows(const char* datPath) {
     (void)startCount;
 
     RES_Close();
+}
+
+/* Exceed2: os .STX ficam dentro de STEP.DAT (PIU32.EXE 0x40d0d7).
+ * Extrai uma entrada de um RESPACK/RESPAC2 sem mexer no arquivo aberto.
+ * O último pacote fica em cache (a Select consulta todas as músicas). */
+static RESArchive* g_packCache = NULL;
+
+uint8_t* Resource_ExtractFromPack(const char* datPath, const char* name, uint32_t* outSize)
+{
+    RESArchive* saved = g_resArchive;
+    g_resArchive = NULL;
+    if (g_packCache && _stricmp(g_packCache->path, datPath) == 0) {
+        g_resArchive = g_packCache;
+    } else {
+        if (g_packCache) { g_resArchive = g_packCache; RES_Close(); g_packCache = NULL; }
+        if (RES_Open(datPath)) g_packCache = g_resArchive;
+    }
+    uint8_t* out = NULL;
+    if (g_resArchive) {
+        int idx = RES_Find(name);
+        if (idx >= 0) {
+            *outSize = RES_GetSize(idx);
+            out = RES_ReadAlloc(idx);
+        }
+    }
+    g_resArchive = saved;
+    return out;
 }

@@ -116,6 +116,7 @@ typedef enum {
     STATE_EXSELECT        = 0x92, /* Exceed: CSelect — BGA\SELECT.DAT + SELECT2.DAT + 90.DAT */
     STATE_IR              = 0x94, /* Exceed: CInternetRanking — BGA\IR.DAT + AUDIO\IR.AUD (src/ir.c) */
     STATE_NAMEINPUT       = 0x95, /* Exceed: CNameInput — BGA\085.DAT (src/nameinput.c) */
+    STATE_STATION         = 0x96, /* Exceed2: CStation — BGA\STATION.DAT (src/station.c) */
     STATE_EXIT            = 0xFF,
 } GameState;
 
@@ -123,9 +124,14 @@ typedef enum {
  * original). Aqui é só a cópia em C (exceed_songs.c, gerado por
  * tools/gen_exceed_songs.py) — não é lido de arquivo, então os ponteiros não
  * precisam casar com o layout de 32 bits. */
-#define EX_SONG_COUNT     105   /* 0x69: limite dos loops em 0x4154A3 / 0x41624A */
-#define EX_CHANNEL_COUNT  3     /* 0 BANYA, 1 K-POP, 2 POP */
-#define EX_CHANNEL_MAX    50    /* 0x32: linha de 0xC8 bytes em 0x004568E0 */
+/* Exceed (exceed.exe): 105 músicas, canal[3][50] em 0x004568E0 — DESATIVADO
+#define EX_SONG_COUNT     105
+#define EX_CHANNEL_COUNT  3
+#define EX_CHANNEL_MAX    50
+*/
+#define EX_SONG_COUNT     138   /* Exceed2: 0x412DD0 retorna 0x8A */
+#define EX_CHANNEL_COUNT  5     /* 0 BANYA, 1 K-POP, 2 POP (ARCADE), 3 REMIX, 4 BATTLE */
+#define EX_CHANNEL_MAX    53    /* 0x35: linha de 0xD4 bytes em 0x00458AB8 */
 typedef struct {
     uint32_t    id;         /* +0x00  hex -> "%X" nos nomes de arquivo */
     const char* artistKr;   /* +0x04 */
@@ -136,6 +142,7 @@ typedef struct {
     int         level[5];   /* +0x20 NORMAL HARD CRAZY FREESTYLE(Double) NIGHTMARE, -1 = não existe */
     uint8_t     visible;    /* +0x34 */
     uint8_t     hidden;     /* +0x35 — init 0x416474: visible = (hidden == 0) */
+    uint8_t     lock[5];    /* Exceed2 +0x3C..+0x40 (base 0x4563A4): modo travado por dificuldade */
 } ExceedSong;
 extern const ExceedSong g_exSongs[EX_SONG_COUNT];
 extern const int g_exChannels[EX_CHANNEL_COUNT][EX_CHANNEL_MAX];
@@ -156,6 +163,7 @@ typedef struct {
     bool inUse;
     uint32_t lastFrame;
     char name[64];
+    int hd;          /* 1 = textura substituída por HD\<NOME>_<CRC>.png; width/height continuam lógicos */
 } Texture;
 
 typedef struct {
@@ -259,6 +267,15 @@ typedef struct {
     int patFlags;
 } BGALayer;
 
+#define MAX_BGA_SCENES 32
+
+typedef struct {
+    char name[64];
+    int start, end, loop, mode;   /* +0x44 +0x46 +0x48 +0x4C */
+    int cur;                      /* [+0x13a30] */
+    int rev;                      /* [+0x13a34] */
+} BGAScene;
+
 typedef struct {
     char name[64];
     int version;
@@ -270,6 +287,11 @@ typedef struct {
     int slotLayer[MAX_BGA_LAYERS];   /* -1 = slot vazio */
     int slotCount;
     float scaleX, scaleY;            /* 0x41F754 (+0x11AAAC/+0x11AAB0) */
+    /* Exceed2 BGA3: cenas nomeadas após "SCENE1" (PIU32.EXE 0x41e474..0x41e51b).
+     * Registro de 0x50 B: +0 id, +4 nome[0x40], +0x44 início, +0x46 fim,
+     * +0x48 volta, +0x4C modo. Estado: [+0x13a30] quadro, [+0x13a34] reverso. */
+    int sceneCount;
+    BGAScene scenes[MAX_BGA_SCENES];
 } BGAPicture;
 
 typedef struct {
@@ -342,6 +364,7 @@ typedef struct {
     int  gfxTexFilter;   /* 0 = SMOOTH (GL_LINEAR), 1 = SHARP (GL_NEAREST) */
     bool gfxShowFps;
     int  gfxAspect;      /* 0 = 4:3 com bordas, 1 = esticar */
+    int  gfxUpscale;     /* 0 = OFF, 2/3/4 = xBRZ ao carregar texturas (xbrz.c) */
     
     InputState input;
     GameplayStats stats;
@@ -475,6 +498,7 @@ extern int g_fontArrow544;
 extern int g_fontArrow545;
 extern int g_fontArrowETC;
 extern int g_fontArrowF;
+extern int g_fontSpark;
 
 void Game_Init(HINSTANCE hInstance);
 void Game_Shutdown(void);
@@ -658,6 +682,9 @@ void Gamestate_UpdateLogo(float dt);
 void Gamestate_UpdateIntro(float dt);
 void Gamestate_RenderIntro(void);
 unsigned Title_GetJoinedMask(void); /* intro.c — [0x568FF4] bits 0/1 */
+void Title_SetJoinedMask(unsigned m);
+void Station_Update(float dt);      /* station.c — CStation do Exceed2 */
+void Station_Render(void);
 /* Exceed: songDB sintético montado das tabelas do exceed.exe quando não há
  * Stage.cfg. Com ele, os IDs são hex e os arquivos saem em "%X"
  * (STEP\%X.STX, AUDIO\%X.AUD, BGA\%X.DAT, TITLE\T%X.PNZ). */
@@ -666,6 +693,7 @@ const char* Song_IdStr(int id);
 int Song_DataId(int id);            /* A26 -> 401, A27 -> 402 (TITLE/BGA/STEP); o .AUD fica o da própria música */
 const char* Song_DataIdStr(int id);
 bool ExSelect_IsXMode(void);
+unsigned ExSelect_GetFlags(void);
 void Attract_Idle(void);            /* Exceed CIdle: próxima tela da atração */
 extern bool g_exDemo;               /* [0x568FF4] & 0x100000: demo da atração ("-demo") */
 bool Demo_SoundOn(void);            /* EEPROM +0x7F0 */
@@ -688,6 +716,16 @@ void IR_Render(void);
 void NameInput_Update(float dt);
 void NameInput_Render(void);
 void ExSelect_Update(float dt);
+void ExSelect_SetStation(int station, int startChannel);
+/* eeprom_x2.c — save do Exceed2 (PIUEXCEED2.INI, layout do PIU32.EXE) */
+void     Eeprom2_Load(void);
+void     Eeprom2_Save(void);
+uint8_t* Eeprom2_Data(void);
+uint8_t  Eeprom2_Language(void);
+bool     Eeprom2_SongOff(int i);
+void     Eeprom2_CountPlay(int i);
+bool     Eeprom2_CanonUnlocked(void);
+void     Eeprom2_SetCanonUnlocked(void);   /* Exceed2: [0x484FB4] e argumento do "SELECT" */
 void ExSelect_Render(void);
 void Gamestate_UpdateMenu(float dt);
 extern bool g_cdLoaded;
@@ -762,6 +800,8 @@ int Resource_GetStateBGAIndex(const char* stateName);
 int Resource_SwitchBGA(const char* datName);
 int Resource_LoadTextureFromDAT(const char* datPath, const char* resName);
 uint8_t* Resource_DecryptENC1(const uint8_t* data, uint32_t dataSize, uint32_t* outSize);
+uint8_t* Resource_DecryptENC2(const uint8_t* buf, uint32_t fileSize, uint32_t* outSize); /* PIU32.EXE 0x421390 */
+uint8_t* Resource_ExtractFromPack(const char* datPath, const char* name, uint32_t* outSize);
 int Resource_LoadPNZ(const char* path);
 
 int loadTextureFromRES(const char* resName);

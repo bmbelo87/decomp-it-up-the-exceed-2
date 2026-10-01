@@ -32,6 +32,7 @@ static bool loadIni(bool all)
         if (sscanf(line, "TexFilter=%d",   &v) == 1) g_game.gfxTexFilter = (v != 0);
         if (sscanf(line, "ShowFPS=%d",     &v) == 1) g_game.gfxShowFps   = (v != 0);
         if (sscanf(line, "Aspect=%d",      &v) == 1) g_game.gfxAspect    = (v != 0);
+        /* if (sscanf(line, "Upscale=%d",     &v) == 1) g_game.gfxUpscale   = (v >= 2 && v <= 4) ? v : 0;   UPSCALE desativado */
         if (!all) continue;
         if (sscanf(line, "Difficulty=%d",  &v) == 1) g_game.optionDifficulty = v;
         if (sscanf(line, "StageBreak=%d",  &v) == 1) g_game.optionToggle1    = v;
@@ -67,6 +68,7 @@ void GameOption_Save(void)
         fprintf(f, "TexFilter=%d\n", g_game.gfxTexFilter);
         fprintf(f, "ShowFPS=%d\n", (int)g_game.gfxShowFps);
         fprintf(f, "Aspect=%d\n", g_game.gfxAspect);
+        /* fprintf(f, "Upscale=%d\n", g_game.gfxUpscale);   UPSCALE desativado */
         fclose(f);
     }
     Log_Print("GameOption: saved (diff=%d sb=%d help=%d audio=%dms)\n",
@@ -80,6 +82,7 @@ void GameOption_Load(void)
     g_game.gfxTexFilter = 0;
     g_game.gfxShowFps   = false;
     g_game.gfxAspect    = 0;
+    g_game.gfxUpscale   = 0;      /* xBRZ desligado: texturas como no original */
     g_game.isFullscreen = false;
     g_game.audioOffsetMs = 80;  /* 80ms — latência típica de áudio moderna (extensão do port) */
 

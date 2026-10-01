@@ -45,7 +45,12 @@ typedef struct {
 #define NT_DIV_G   2  // G: pisar soma no contador de G ([jog+0x2C]) e escolhe ramo
 #define NT_DIV_W   3  // W: idem, contador de W ([jog+0x28])
 #define NT_DIV_A   4  // A: marcador antes do bloco de decisão (não desenha)
-#define STEP_DIV_MAX_PAGES 8
+/* CStep (step.hpp do fonte): STXDATA m_STXData[NUM_BLOCK_Y = 50][10] —
+ * até 50 páginas/segmentos, 10 ramos cada. */
+#define STEP_MAX_BLOCK_Y   50
+#define STEP_MAX_BLOCK_X   10
+#define STEP_DIV_MAX_PAGES STEP_MAX_BLOCK_Y
+/* #define STEP_DIV_MAX_PAGES 8 */
 
 typedef struct {
     StepHalf half1;
@@ -73,7 +78,7 @@ typedef struct {
         uint32_t rowStart; // first row of this segment
         uint32_t rowCount; // rows in this segment
         int32_t speed;     // velocidade do bloco x1000 (bloco+96; 0 = sem multiplicador)
-    } segments[8]; // up to 7 splits
+    } segments[STEP_MAX_BLOCK_Y]; // era [8] (7 splits); o original aceita 50 blocos Y
 
     /* Division (seção 7): o header da seção tem 50 contagens de blocos; cada
      * contagem não-nula é uma PÁGINA e os blocos dela são RAMOS (PUMPY.EXE:
@@ -86,7 +91,7 @@ typedef struct {
         int branchCount;
         uint32_t rowStart;     // linha inicial da página no chart tocável
         uint32_t rowCount;
-        StepRow* branchRows[10];
+        StepRow* branchRows[STEP_MAX_BLOCK_X];
         int32_t cond[10][20];  // 10 pares [mín,máx] por ramo (bloco+16)
         int32_t speed[10];     // velocidade de cada ramo x1000 (bloco+96)
     } divPages[STEP_DIV_MAX_PAGES];

@@ -132,7 +132,10 @@ add_executable(Pumpy
     src/ir_mixtable.c
     src/nameinput.c
     src/exceed_select.c
-    src/exceed_songs.c
+    src/station.c
+    src/eeprom_x2.c
+    # src/exceed_songs.c   (Exceed: tabelas do exceed.exe)
+    src/exceed2_songs.c
     src/service_menu.c
     src/coin.c
     src/debug_console.c
@@ -155,6 +158,7 @@ add_executable(Pumpy
     src/step.c
     src/song.c
     src/zlibinflate.c
+    # src/xbrz.c        # UPSCALE (xBRZ) das texturas — DESATIVADO (30/09/2026)
     ${PLATFORM_SOURCES}
     # ${WAVE_EMBEDDED_C}   (desativado no Exceed)
 )
@@ -171,12 +175,15 @@ target_link_libraries(Pumpy PRIVATE pumpy_deps)
 if(MSVC)
     target_compile_options(Pumpy PRIVATE /W3)
     target_link_options(Pumpy PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+    # 4 GB de endereço no Win32 rodando em Windows 64-bit (UPSCALE xBRZ ocupa muita textura)
+    target_link_options(Pumpy PRIVATE /LARGEADDRESSAWARE)
 elseif(WIN32)
     target_link_options(Pumpy PRIVATE -mwindows)
 endif()
 
 if(WIN32)
     target_link_libraries(Pumpy PRIVATE winmm)   # timeGetTime / timeBeginPeriod
+    target_sources(Pumpy PRIVATE src/icon.rc)    # ícone do .exe (src/icon.ico, gerado de icon.png)
 else()
     target_link_libraries(Pumpy PRIVATE m pthread dl)
 endif()

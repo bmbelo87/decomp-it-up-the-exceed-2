@@ -120,7 +120,30 @@ bool Movie_Open(const char* path, bool loop) {
     FILE* f = fopen(path, "rb");
     if (!f) { Log_Print("MOVIE: falha ao abrir '%s'\n", path); return false; }
     uint8_t hdr[0x8C];
-    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr) || memcmp(hdr, "MOV2", 4) != 0) {
+    size_t hdrGot = fread(hdr, 1, sizeof(hdr), f);
+    if (hdrGot >= 8 && hdr[0] == 0 && hdr[1] == 0 && hdr[2] == 1 && hdr[3] == 0xB3) {
+        /* Exceed2 (PIU32.EXE 0x4209f0): MPEG elementar puro, sem cabeçalho nem
+         * embaralhamento — fps pelos primeiros 0x40 bytes (0x420e60) e blocos de
+         * 0x1000 desde o offset 0 direto no mpeg2_buffer. */
+        for (int b = 0; b < 256; b++) g_mov.table[b] = (uint8_t)b;
+        g_mov.f = f;
+        g_mov.dataStart = 0;
+        g_mov.fps = movie_fps(hdr);
+        fseek(f, 0, SEEK_SET);
+        g_mov.dec = p_init(0);
+        if (!g_mov.dec) { fclose(f); g_mov.f = NULL; return false; }
+        g_mov.info = p_info(g_mov.dec);
+        g_mov.loop = loop;
+        g_mov.time = 0;
+        g_mov.target = 0;
+        g_mov.decoded = 0;
+        g_mov.ended = false;
+        g_mov.hasFrame = false;
+        if (!g_mov.tex) glGenTextures(1, &g_mov.tex);
+        Log_Print("MOVIE: '%s' aberto (MPEG puro, %.3f fps, loop=%d)\n", path, g_mov.fps, loop);
+        return true;
+    }
+    if (hdrGot != sizeof(hdr) || memcmp(hdr, "MOV2", 4) != 0) {
         Log_Print("MOVIE: '%s' nao e MOV2\n", path);
         fclose(f); return false;
     }

@@ -1,5 +1,6 @@
 #include "pumpy.h"
 #include "bga.h"
+#include "movie.h"
 
 static int g_resultFrame;
 /* Este static escondia o g_fontTexId global (font.c:103, declarado extern em
@@ -359,6 +360,14 @@ void Result_Enter(void) {
     snprintf(ap, sizeof(ap), "%s/AUDIO/%s.AUD", g_game.currentDirectory,
              g_exceedSongIds ? "GRADE" : "83");
     if (BGM_LoadAUDDirect(ap)) BGM_Play(true);
+    /* Exceed2 (PIU32.EXE 0x40A674..0x40A68F): BGA\GRADE.MOV por baixo do
+     * GRADE.DAT, aberto sem loop (2º argumento 0) se o arquivo existir */
+    if (g_exceedSongIds) {
+        char mp[MAX_PATH];
+        snprintf(mp, sizeof(mp), "%s/BGA/GRADE.MOV", g_game.currentDirectory);
+        FILE* mf = fopen(mp, "rb");
+        if (mf) { fclose(mf); Movie_Open(mp, false); }
+    }
 
     g_gradeP1 = calcGrade(g_game.stats.perfectCount[0], g_game.stats.greatCount[0],
                           g_game.stats.goodCount[0], g_game.stats.badCount[0],
@@ -398,6 +407,7 @@ void Result_Update(float dt) {
         exGradeSounds(g_exT);
         if (g_exT > 0x168) {                     /* 0x40D0E7 */
             GameState ns = Result_GetNextState();
+            Movie_Close();                       /* End 0x40B64B */
             BGM_Stop();
             Resource_ClearBGA();
             Game_ChangeState(ns);

@@ -622,23 +622,11 @@ static uint32_t Audio_DecryptAUD(const uint8_t* fileData, uint32_t fileSize,
                                  uint8_t** outData, uint32_t* outSize) {
     if (fileSize < 140) return 0;
     if (memcmp(fileData, "ENC2", 4) == 0) {
-        /* Exceed (exceed.exe 0x420390 / 0x420310): após hdr[0x88] vêm a semente
-         * (u32), um bloco de 0x400 bytes e hdr[0x84] bytes de dados. A tabela de
-         * XOR é o bloco passado por 0x411DBC em fatias de 16 bytes. */
-        uint32_t size = *(uint32_t*)(fileData + 0x84);
-        uint32_t off = 140 + *(uint32_t*)(fileData + 0x88);
-        if (off + 4 + 0x400 > fileSize) return 0;
-        if (size > fileSize - off - 4 - 0x400) size = fileSize - off - 4 - 0x400;
-        if (size == 0) return 0;
-        uint32_t seed2 = *(uint32_t*)(fileData + off);
-        uint8_t table[0x400];
-        for (int k = 0; k < 0x400; k += 16)
-            RESPACK_DeriveKey16(fileData + off + 4 + k, table + k);
-        uint8_t* out = (uint8_t*)malloc(size);
-        if (!out) return 0;
-        const uint8_t* src = fileData + off + 4 + 0x400;
-        for (uint32_t i = 0; i < size; i++)
-            out[i] = bit_reverse(src[i]) ^ table[(seed2 + i) & 0x3FF];
+        /* Exceed2 (PIU32.EXE 0x421390) / Exceed (exceed.exe 0x420390):
+         * ver Resource_DecryptENC2 */
+        uint32_t size = 0;
+        uint8_t* out = Resource_DecryptENC2(fileData, fileSize, &size);
+        if (!out || size == 0) { free(out); return 0; }
         *outData = out;
         *outSize = size;
         return size;
