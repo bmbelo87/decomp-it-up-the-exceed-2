@@ -29,6 +29,7 @@
  */
 #include "pumpy.h"
 #include "bga.h"
+#include "testbga.h"
 
 #define SEL_BGA   0   /* [this+4] */
 #define SEL2_BGA  1   /* [this+8] */
@@ -313,6 +314,16 @@ static void checkCodes(int p) {
         g_mods[p] = m;
         clearCodeBuffers(p);
         break;
+    }
+
+    /* Extra do port (não existe no original): TestBGA, DL DL DL DL DR DR DR DR C,
+     * mesmo código do Prex3 (song_select.c). Starfield no lugar do fundo. */
+    static const uint8_t k_codeTestBGA[9] = { 1, 1, 1, 1, 2, 2, 2, 2, 4 };
+    if (memcmp(g_buf9[p], k_codeTestBGA, 9) == 0) {
+        g_game.cmdTestBGA[p] = true;
+        InitS();
+        Log_Print("EXSELECT P%d: TestBGA ON\n", p + 1);
+        clearCodeBuffers(p);
     }
 
     for (int k = 0; k < 2; k++) {

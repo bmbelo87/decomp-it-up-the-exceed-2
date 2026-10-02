@@ -245,6 +245,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
         /* Velocidade do bloco x1000 (bloco+96 = chart+0x60 a partir do BPM; o
          * PUMPY.EXE lê em 0x4118d0 e multiplica pela velocidade do jogador). */
         memcpy(&chart->segments[0].speed, decompBuf + 96, 4);
+        chart->segments[0].stopFlag = decompBuf[100];
 
         bool mirror = true;
         chart->panelCount = STEP_PANELS_SINGLE;
@@ -395,6 +396,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
                     chart->segments[segIdx].rowStart = rowCount;
                     chart->segments[segIdx].rowCount = sRowCount;
                     memcpy(&chart->segments[segIdx].speed, bDec + 96, 4);
+                    chart->segments[segIdx].stopFlag = bDec[100];
                     chart->segmentCount++;
                 }
 

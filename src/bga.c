@@ -774,10 +774,13 @@ void BGA_DrawFrame(int bgaIndex, int frame) {
 /* 0x41f0f0(nome, desenha): desenha no quadro atual e avança.
  * No fim (quadro >= fim): modo 0 -> 30000 (some), 1 -> volta, 2 -> segura no
  * último, 3 -> passa a voltar (reverso até "volta"). */
+bool g_renderTick = true;   /* false nos desenhos extras (> 60 Hz): só desenha, não avança */
+
 void BGA_ScenePlay(int bgaIndex, const char* name, bool draw) {
     BGAScene* sc = bga_findScene(bgaIndex, name);
     if (!sc) return;
     if (draw) BGA_DrawFrame(bgaIndex, sc->cur);
+    if (!g_renderTick) return;
     if (sc->rev) {
         sc->cur--;
         if (sc->cur < sc->loop) { sc->rev = 0; sc->cur = sc->loop; }

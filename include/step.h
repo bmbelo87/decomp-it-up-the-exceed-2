@@ -78,6 +78,8 @@ typedef struct {
         uint32_t rowStart; // first row of this segment
         uint32_t rowCount; // rows in this segment
         int32_t speed;     // velocidade do bloco x1000 (bloco+96; 0 = sem multiplicador)
+        uint8_t stopFlag;  // bloco+100: 1 = Stop (setas param delay x 10 ms); 0 = delay vira vão
+                           // no scroll; outros valores = lixo do editor (o original só testa 0 e 1)
     } segments[STEP_MAX_BLOCK_Y]; // era [8] (7 splits); o original aceita 50 blocos Y
 
     /* Division (seção 7): o header da seção tem 50 contagens de blocos; cada

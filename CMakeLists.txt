@@ -124,6 +124,7 @@ add_executable(Pumpy
     src/menu.c
     src/song_select.c
     src/staff.c
+    src/testbga.c
     src/movie.c
     src/intro.c
     src/highscore.c

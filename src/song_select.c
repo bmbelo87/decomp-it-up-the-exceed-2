@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "testbga.h"
 #include <string.h>
 
 bool g_cdLoaded = false;   /* mantido fora do #if 0: resource.c:1398 */
@@ -55,13 +56,14 @@ static const PadButton k_vanishSeq[CMD_BUF_LEN] = {
     PAD_UL, PAD_UR, PAD_DL, PAD_DR, PAD_C
 };
 
-/* Buffer9 sequências [0=RV, 1=Mirror, 2=RandomStep, 3=Freedom, 4=Earthworm] */
-static const PadButton k_seq9[5][CMD_BUF9_LEN] = {
+/* Buffer9 sequências [0=RV, 1=Mirror, 2=RandomStep, 3=Freedom, 4=Earthworm, 5=TestBGA] */
+static const PadButton k_seq9[6][CMD_BUF9_LEN] = {
     { PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_C }, /* Random Velocity */
     { PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_C }, /* Mirror          */
     { PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_DL, PAD_DR, PAD_DL, PAD_DR, PAD_C }, /* Random Step     */
     { PAD_UL, PAD_DL, PAD_UR, PAD_DR, PAD_DR, PAD_UL, PAD_UR, PAD_DL, PAD_C }, /* Freedom         */
     { PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_DR, PAD_UR, PAD_DL, PAD_UL, PAD_C }, /* Earthworm       */
+    { PAD_DL, PAD_DL, PAD_DL, PAD_DL, PAD_DR, PAD_DR, PAD_DR, PAD_DR, PAD_C }, /* TestBGA (extra do port) */
 };
 
 /* Reseta todos os cheats de um player (Buffer6 trigger) */
@@ -74,6 +76,7 @@ static void Cmd_ResetAllCheats(int player) {
     g_game.cmdFreedom[player]        = false;
     g_game.cmdVanish[player]         = false;
     g_game.cmdNonStep[player]        = false;
+    g_game.cmdTestBGA[player]        = false;
     g_cmdBufCount[player]            = 0;
     g_cmdBuf9Count[player]           = 0;
     g_cmdBuf6Count[player]           = 0;
@@ -109,7 +112,7 @@ static bool Cmd_Push(int player, PadButton btn) {
 
     /* ── Buffer9: cheats de 9 botões — PRIORIDADE ALTA ────────────────── */
     if (g_cmdBuf9Count[player] >= CMD_BUF9_LEN) {
-        for (int seq = 0; seq < 5; seq++) {
+        for (int seq = 0; seq < 6; seq++) {
             if (memcmp(g_cmdBuf9[player], k_seq9[seq], CMD_BUF9_LEN * sizeof(PadButton)) == 0) {
                 g_cmdBuf9Count[player] = 0;
                 g_cmdBufCount[player]  = 0;
@@ -141,6 +144,11 @@ static bool Cmd_Push(int player, PadButton btn) {
                     g_game.cmdRandomVelocity[player] = false;
                     Log_Print("CMD P%d: Earthworm %s\n", player+1,
                               g_game.cmdEarthworm[player] ? "ON" : "OFF");
+                    break;
+                case 5: /* TestBGA — extra do port (X1Rus testbga.cpp) */
+                    g_game.cmdTestBGA[player] = true;
+                    InitS();
+                    Log_Print("CMD P%d: TestBGA ON\n", player+1);
                     break;
                 }
                 cheatFired = true;
