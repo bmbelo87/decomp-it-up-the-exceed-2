@@ -15,7 +15,7 @@ static void res_xor_decrypt(uint8_t* data, uint32_t size) {
 }
 
 int main() {
-    const char* path = "E:\\Pumps\\PREX3-Original\\BGA\\R_WARN.DAT";
+    const char* path = "F:\\14_px3\\gamePC\\BGA\\R_WARN.DAT";
     FILE* f = fopen(path, "rb");
     if (!f) { printf("FAIL: cannot open %s\n", path); return 1; }
     fseek(f, 0, SEEK_END);

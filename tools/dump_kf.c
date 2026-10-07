@@ -55,7 +55,7 @@ static uint8_t* load_bga_from_dat(const char* datPath, uint32_t* outSize) {
 }
 
 int main(int argc, char** argv) {
-    const char* path = (argc > 1) ? argv[1] : "E:\\Pumps\\PREX3-Original\\BGA\\81.DAT";
+    const char* path = (argc > 1) ? argv[1] : "F:\\14_px3\\gamePC\\BGA\\81.DAT";
     uint32_t bgaSize = 0;
     uint8_t* bga = load_bga_from_dat(path, &bgaSize);
     if (!bga) return 1;

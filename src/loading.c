@@ -33,12 +33,20 @@ void Loading_Enter(int songId) {
     Resource_ClearBGA();
 
     char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s/TITLE/T%s.pnz", g_game.currentDirectory, Song_DataIdStr(songId));
-    Log_Print("Loading: loading PNZ '%s'\n", path);
+    /* Exceed2 (PIU32.EXE 0x4041a7..0x4041ee): "T%sH" com o byte +0x7EF da EEPROM
+     * == 0 (coreano), senão "T%sE"; depois "TITLE\%s.PNZ" (0x420f1a).
+     * era: "%s/TITLE/T%s.pnz" — sem a letra, nenhum PNZ do Exceed2 abria. */
+    /* Demo Play nunca carrega PNZ: 0x40419b testa [0x484F7C] & 0x100000 (demo)
+     * e pula a montagem do nome e a carga (salta para 0x4041f6). */
+    if (!g_exDemo) {
+        snprintf(path, sizeof(path), "%s/TITLE/T%s%c.PNZ", g_game.currentDirectory, Song_DataIdStr(songId),
+                 Eeprom2_Language() == 0 ? 'H' : 'E');
+        Log_Print("Loading: loading PNZ '%s'\n", path);
 
-    g_pnzTexId = Resource_LoadPNZ(path);
-    if (g_pnzTexId < 0) {
-        Log_Print("Loading: PNZ not found for song %d\n", songId);
+        g_pnzTexId = Resource_LoadPNZ(path);
+        if (g_pnzTexId < 0) {
+            Log_Print("Loading: PNZ not found for song %d\n", songId);
+        }
     }
 
     g_game.state = STATE_SONG_TITLE;
@@ -104,14 +112,22 @@ void Loading_Update(float dt) {
             g_game.state = STATE_GAMEPLAY;
             Gameplay_Start(g_loadingSongId);
 
+            /* Extra do port: o vídeo é aberto, lido inteiro para a memória e tem o
+             * 1º quadro decodificado AQUI, com o PNZ na tela e antes da espera
+             * (que absorve o tempo). Sem isso a leitura de disco (blocos de 4 KB
+             * durante a música) e a init do decoder caíam dentro do gameplay.
+             * era: Movie_Open depois da espera. */
+            if (useMov) {
+                Log_Print("Loading: loading MOV '%s'\n", movPath);
+                if (Movie_Open(movPath, false)) {
+                    Movie_Preload();
+                    Movie_Prime();
+                }
+            }
+
             /* Espera ativa como no original (0x4116b5): nada é desenhado. */
             while (timeGetTime() - g_loadingStartMs < LOADING_MIN_TO_MUSIC_MS)
                 Sleep(1);
-
-            if (useMov) {
-                Log_Print("Loading: loading MOV '%s'\n", movPath);
-                Movie_Open(movPath, false);
-            }
             if (audOk && !(g_exDemo && !Demo_SoundOn()))   /* 0x40236A */
                 BGM_Play(false);
             g_game.stateFrame = 0;

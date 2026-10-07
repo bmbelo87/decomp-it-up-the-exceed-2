@@ -1,10 +1,13 @@
 #include "pumpy.h"
 #include <stdarg.h>
 #include <inttypes.h>
+#include <SDL.h>
 
 GameContext g_game = {0};
 
 static FILE* g_logFile = NULL;
+/* Extra do port: tempo gasto gravando o log (ms), lido pelo detector de travadas */
+double g_logMs = 0.0;
 
 /* A versão anterior formatava direto em g_game.logBuffer no offset logPos e
  * depois fazia OutputDebugStringA(logBuffer + logPos - written). Dois problemas:
@@ -38,8 +41,10 @@ void Log_Print(const char* fmt, ...) {
         g_logFile = fopen("pumpy.log", "w");
     }
     if (g_logFile) {
+        uint64_t hz0 = SDL_GetPerformanceCounter();
         fputs(line, g_logFile);
         fflush(g_logFile);   /* mantido: foi o que permitiu localizar o crash */
+        g_logMs += (double)(SDL_GetPerformanceCounter() - hz0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
     }
 }
 

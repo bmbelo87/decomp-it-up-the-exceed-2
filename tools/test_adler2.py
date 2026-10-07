@@ -1,6 +1,6 @@
 import struct, zlib
 
-with open('E:/Pumps/PREX3-Original/STEP/101.STX','rb') as f:
+with open('F:/14_px3/gamePC/STEP/101.STX','rb') as f:
     data = f.read()
 
 # The zlib stream starts at 0x1F0

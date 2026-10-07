@@ -51,6 +51,29 @@ typedef struct {
     SDL_Scancode sc[PAD_MAX_KEYS];
 } PadKeys;
 
+#define MAX_JOYSTICKS 4
+static SDL_Joystick* g_joysticks[MAX_JOYSTICKS];
+
+typedef enum {
+    JOY_BIND_NONE = 0,
+    JOY_BIND_BUTTON = 1,
+    JOY_BIND_HAT = 2,
+} JoyBindType;
+
+typedef struct {
+    JoyBindType type;
+    int         device;
+    int         id;
+} JoyBinding;
+
+static JoyBinding g_padJoy[2][PAD_BUTTONS_PER_PLAYER];
+
+static struct {
+    bool active;
+    int  player;
+    int  button;
+} g_listen;
+
 static PadKeys g_padKeys[2][PAD_BUTTONS_PER_PLAYER];
 static bool g_keysLoaded = false;
 
@@ -61,6 +84,11 @@ static const uint8_t kDefaultCfg[2][9] = {
 
 /* índice da grade 3x3 -> bit do botão (0=7 1=9 2=5 3=1 4=3), -1 = sem função */
 static const signed char kGridBtn[9] = { 3, -1, 4, -1, 2, -1, 0, -1, 1 };
+
+/* botão do pad (0=7 1=9 2=5 3=1 4=3) -> índice na grade 3x3 do piukey.cfg */
+static const int kBtnGridIdx[PAD_BUTTONS_PER_PLAYER] = { 6, 8, 4, 0, 2 };
+
+static uint8_t g_currCfg[2][9];
 
 /* scancode PS/2 set 1 (0x80|x = estendido, estilo DirectInput) -> teclas SDL */
 #define K1(c, a)    { c, SDL_SCANCODE_##a, SDL_SCANCODE_UNKNOWN }
@@ -105,11 +133,34 @@ static bool Input_ScanLookup(uint8_t code, PadKeys* out) {
     return false;
 }
 
+static uint8_t Input_CodeFromScancode(SDL_Scancode sc) {
+    for (size_t i = 0; i < sizeof(kScan) / sizeof(kScan[0]); i++) {
+        if (kScan[i].a == sc || (kScan[i].b != SDL_SCANCODE_UNKNOWN && kScan[i].b == sc))
+            return kScan[i].code;
+    }
+    return 0;
+}
+
+static void Input_InitJoysticks(void) {
+    static bool inited = false;
+    if (inited) return;
+    inited = true;
+    int n = SDL_NumJoysticks();
+    for (int i = 0; i < n && i < MAX_JOYSTICKS; i++) {
+        g_joysticks[i] = SDL_JoystickOpen(i);
+        if (g_joysticks[i]) {
+            Log_Print("Input: opened joystick %d: '%s'\n", i, SDL_JoystickName(g_joysticks[i]));
+        }
+    }
+}
+
 /* Carrega piukey.cfg (pasta do jogo) como o KEYInitialize do original. */
 void Input_LoadKeyConfig(void) {
     uint8_t cfg[2][9];
     memcpy(cfg, kDefaultCfg, sizeof(cfg));
     g_keysLoaded = true;
+
+    Input_InitJoysticks();
 
     Log_Print("KEYInitialize : LOADING PIUKEY.CFG\n");
     char path[MAX_PATH];
@@ -129,6 +180,8 @@ void Input_LoadKeyConfig(void) {
         Log_Print(ok ? "...OK\n" : "...FALSE\n");
     }
 
+    memcpy(g_currCfg, cfg, sizeof(g_currCfg));
+
     for (int p = 0; p < 2; p++) {
         for (int i = 0; i < 9; i++) {
             int b = kGridBtn[i];
@@ -138,6 +191,7 @@ void Input_LoadKeyConfig(void) {
                 Log_Print("Input: piukey.cfg P%d key %02x unknown, using default %02x\n",
                           p + 1, cfg[p][i], kDefaultCfg[p][i]);
                 cfg[p][i] = kDefaultCfg[p][i];
+                g_currCfg[p][i] = kDefaultCfg[p][i];
                 Input_ScanLookup(cfg[p][i], k);
             }
             char names[64] = "";
@@ -151,20 +205,193 @@ void Input_LoadKeyConfig(void) {
     }
 }
 
-/* Teclas de pad que receberam KEYDOWN desde o último Input_Update.
- *
- * O SDL_GetKeyboardState só enxerga o estado no instante do frame: um toque
- * curto que começa e termina dentro dos 16,7 ms entre dois updates não existe
- * para o jogo — a seta passa sem julgamento nenhum. Guardando a borda de
- * subida vinda da fila de eventos, o toque é sempre visto no update seguinte,
- * e um toque feito logo após o update anterior entra um frame mais cedo do que
- * entraria por polling puro. */
+uint8_t Input_GetButtonKey(int player, PadButton b) {
+    if (player < 0 || player > 1 || b < 0 || b >= PAD_BUTTONS_PER_PLAYER) return 0;
+    return g_currCfg[player][kBtnGridIdx[b]];
+}
+
+void Input_SetButtonKey(int player, PadButton b, uint8_t code) {
+    if (player < 0 || player > 1 || b < 0 || b >= PAD_BUTTONS_PER_PLAYER) return;
+    g_currCfg[player][kBtnGridIdx[b]] = code;
+    Input_ScanLookup(code, &g_padKeys[player][b]);
+}
+
+void Input_GetButtonKeyName(int player, PadButton b, char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    if (player < 0 || player > 1 || b < 0 || b >= PAD_BUTTONS_PER_PLAYER) {
+        snprintf(out, outSize, "--");
+        return;
+    }
+    uint8_t code = g_currCfg[player][kBtnGridIdx[b]];
+    for (size_t i = 0; i < sizeof(kScan) / sizeof(kScan[0]); i++) {
+        if (kScan[i].code == code) {
+            snprintf(out, outSize, "%s", SDL_GetScancodeName(kScan[i].a));
+            return;
+        }
+    }
+    snprintf(out, outSize, "%02X", code);
+}
+
+void Input_GetButtonJoyName(int player, PadButton b, char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    if (player < 0 || player > 1 || b < 0 || b >= PAD_BUTTONS_PER_PLAYER) {
+        snprintf(out, outSize, "--");
+        return;
+    }
+    JoyBinding* j = &g_padJoy[player][b];
+    if (j->type == JOY_BIND_BUTTON) {
+        snprintf(out, outSize, "J%d Btn %d", j->device + 1, j->id);
+    } else if (j->type == JOY_BIND_HAT) {
+        const char* dir = (j->id & SDL_HAT_UP) ? "UP" :
+                          (j->id & SDL_HAT_DOWN) ? "DOWN" :
+                          (j->id & SDL_HAT_LEFT) ? "LEFT" :
+                          (j->id & SDL_HAT_RIGHT) ? "RIGHT" : "?";
+        snprintf(out, outSize, "J%d Hat %s", j->device + 1, dir);
+    } else {
+        snprintf(out, outSize, "--");
+    }
+}
+
+void Input_ClearJoyBindings(void) {
+    memset(g_padJoy, 0, sizeof(g_padJoy));
+}
+
+void Input_RestoreDefaultConfig(void) {
+    memcpy(g_currCfg, kDefaultCfg, sizeof(g_currCfg));
+    memset(g_padJoy, 0, sizeof(g_padJoy));
+    for (int p = 0; p < 2; p++) {
+        for (int i = 0; i < 9; i++) {
+            int b = kGridBtn[i];
+            if (b >= 0) Input_ScanLookup(g_currCfg[p][i], &g_padKeys[p][b]);
+        }
+    }
+}
+
+void Input_SaveKeyConfig(void) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/piukey.cfg", g_game.currentDirectory);
+    FILE* f = fopen(path, "wt");
+    if (!f) {
+        Log_Print("Input: falha ao salvar '%s'\n", path);
+        return;
+    }
+    for (int p = 0; p < 2; p++) {
+        fprintf(f, "%02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                g_currCfg[p][0], g_currCfg[p][1], g_currCfg[p][2],
+                g_currCfg[p][3], g_currCfg[p][4], g_currCfg[p][5],
+                g_currCfg[p][6], g_currCfg[p][7], g_currCfg[p][8]);
+    }
+    fclose(f);
+    Log_Print("Input: piukey.cfg salvo com sucesso\n");
+}
+
+void Input_SaveJoyConfig(void) {
+    GameOption_Save();
+}
+
+void Input_WriteJoyConfigToIni(FILE* f) {
+    if (!f) return;
+    fprintf(f, "[Joystick]\n");
+    static const char* const bNames[5] = { "UL", "UR", "C", "DL", "DR" };
+    for (int p = 0; p < 2; p++) {
+        for (int b = 0; b < 5; b++) {
+            fprintf(f, "Joy_P%d_%s=%d,%d,%d\n", p + 1, bNames[b],
+                    (int)g_padJoy[p][b].type, g_padJoy[p][b].device, g_padJoy[p][b].id);
+        }
+    }
+}
+
+void Input_LoadJoyConfig(void) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/PUMPY.INI", g_game.currentDirectory);
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[128];
+    static const char* const bNames[5] = { "UL", "UR", "C", "DL", "DR" };
+    while (fgets(line, sizeof(line), f)) {
+        for (int p = 0; p < 2; p++) {
+            for (int b = 0; b < 5; b++) {
+                char prefix[32];
+                snprintf(prefix, sizeof(prefix), "Joy_P%d_%s=", p + 1, bNames[b]);
+                char* pos = strstr(line, prefix);
+                if (pos) {
+                    int t = 0, dev = 0, id = 0;
+                    if (sscanf(pos + strlen(prefix), "%d,%d,%d", &t, &dev, &id) == 3) {
+                        g_padJoy[p][b].type = (JoyBindType)t;
+                        g_padJoy[p][b].device = dev;
+                        g_padJoy[p][b].id = id;
+                    }
+                }
+            }
+        }
+    }
+    fclose(f);
+}
+
+bool Input_IsListening(void) {
+    return g_listen.active;
+}
+
+void Input_StartListen(int player, PadButton b) {
+    g_listen.active = true;
+    g_listen.player = player;
+    g_listen.button = (int)b;
+}
+
+void Input_CancelListen(void) {
+    g_listen.active = false;
+}
+
 static uint32_t g_padEdge[2];
 
 static int Input_VKFromEvent(const SDL_Event* ev);
 
 bool Input_ProcessEvent(void* evp) {
     SDL_Event* ev = (SDL_Event*)evp;
+
+    if (g_listen.active) {
+        if (ev->type == SDL_KEYDOWN) {
+            if (ev->key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                g_listen.active = false;
+                return true;
+            }
+            uint8_t code = Input_CodeFromScancode(ev->key.keysym.scancode);
+            if (code != 0) {
+                Input_SetButtonKey(g_listen.player, (PadButton)g_listen.button, code);
+                g_listen.active = false;
+                return true;
+            }
+        } else if (ev->type == SDL_JOYBUTTONDOWN) {
+            int dev = 0;
+            for (int i = 0; i < MAX_JOYSTICKS; i++) {
+                if (g_joysticks[i] && SDL_JoystickInstanceID(g_joysticks[i]) == ev->jbutton.which) {
+                    dev = i; break;
+                }
+            }
+            g_padJoy[g_listen.player][g_listen.button].type = JOY_BIND_BUTTON;
+            g_padJoy[g_listen.player][g_listen.button].device = dev;
+            g_padJoy[g_listen.player][g_listen.button].id = ev->jbutton.button;
+            g_listen.active = false;
+            return true;
+        } else if (ev->type == SDL_JOYHATMOTION) {
+            if (ev->jhat.value != SDL_HAT_CENTERED) {
+                int dev = 0;
+                for (int i = 0; i < MAX_JOYSTICKS; i++) {
+                    if (g_joysticks[i] && SDL_JoystickInstanceID(g_joysticks[i]) == ev->jhat.which) {
+                        dev = i; break;
+                    }
+                }
+                g_padJoy[g_listen.player][g_listen.button].type = JOY_BIND_HAT;
+                g_padJoy[g_listen.player][g_listen.button].device = dev;
+                g_padJoy[g_listen.player][g_listen.button].id = ev->jhat.value;
+                g_listen.active = false;
+                return true;
+            }
+        }
+        return true;
+    }
 
     switch (ev->type) {
     case SDL_KEYDOWN:
@@ -182,6 +409,66 @@ bool Input_ProcessEvent(void* evp) {
             Debug_ConsoleKeyHandler(0, vk);
         }
         break;
+    case SDL_JOYBUTTONDOWN: {
+        int dev = 0;
+        for (int i = 0; i < MAX_JOYSTICKS; i++) {
+            if (g_joysticks[i] && SDL_JoystickInstanceID(g_joysticks[i]) == ev->jbutton.which) {
+                dev = i; break;
+            }
+        }
+        for (int p = 0; p < 2; p++) {
+            for (int b = 0; b < PAD_BUTTONS_PER_PLAYER; b++) {
+                if (g_padJoy[p][b].type == JOY_BIND_BUTTON &&
+                    g_padJoy[p][b].device == dev &&
+                    g_padJoy[p][b].id == ev->jbutton.button) {
+                    g_padEdge[p] |= (1u << b);
+                }
+            }
+        }
+        break;
+    }
+    case SDL_JOYHATMOTION: {
+        int dev = 0;
+        for (int i = 0; i < MAX_JOYSTICKS; i++) {
+            if (g_joysticks[i] && SDL_JoystickInstanceID(g_joysticks[i]) == ev->jhat.which) {
+                dev = i; break;
+            }
+        }
+        for (int p = 0; p < 2; p++) {
+            for (int b = 0; b < PAD_BUTTONS_PER_PLAYER; b++) {
+                if (g_padJoy[p][b].type == JOY_BIND_HAT &&
+                    g_padJoy[p][b].device == dev &&
+                    (ev->jhat.value & g_padJoy[p][b].id)) {
+                    g_padEdge[p] |= (1u << b);
+                }
+            }
+        }
+        break;
+    }
+    case SDL_JOYDEVICEADDED: {
+        int id = ev->jdevice.which;
+        for (int i = 0; i < MAX_JOYSTICKS; i++) {
+            if (!g_joysticks[i]) {
+                g_joysticks[i] = SDL_JoystickOpen(id);
+                if (g_joysticks[i])
+                    Log_Print("Input: joystick connected in slot %d: '%s'\n", i, SDL_JoystickName(g_joysticks[i]));
+                break;
+            }
+        }
+        break;
+    }
+    case SDL_JOYDEVICEREMOVED: {
+        SDL_JoystickID jid = ev->jdevice.which;
+        for (int i = 0; i < MAX_JOYSTICKS; i++) {
+            if (g_joysticks[i] && SDL_JoystickInstanceID(g_joysticks[i]) == jid) {
+                Log_Print("Input: joystick disconnected from slot %d\n", i);
+                SDL_JoystickClose(g_joysticks[i]);
+                g_joysticks[i] = NULL;
+                break;
+            }
+        }
+        break;
+    }
     case SDL_TEXTINPUT:
         if (Debug_ConsoleIsActive() && ev->text.text[0]) {
             Debug_ConsoleKeyHandler((unsigned char)ev->text.text[0], 0);
@@ -302,7 +589,7 @@ void Input_Update(void) {
     if (kb && (SDL_GetWindowFlags(kb) & SDL_WINDOW_INPUT_FOCUS))
         g_focused = true;
 
-    /* Pad state from keyboard, only when the window has focus. */
+    /* Pad state from keyboard and joysticks, only when the window has focus. */
     if (g_focused) {
         for (p = 0; p < 2; p++) {
             for (int b = 0; b < PAD_BUTTONS_PER_PLAYER; b++) {
@@ -310,6 +597,19 @@ void Input_Update(void) {
                     if (kbd[g_padKeys[p][b].sc[i]]) {
                         g_game.input.padState[p] |= (1u << b);
                         break;
+                    }
+                }
+                if (g_padJoy[p][b].type == JOY_BIND_BUTTON) {
+                    int dev = g_padJoy[p][b].device;
+                    if (dev >= 0 && dev < MAX_JOYSTICKS && g_joysticks[dev]) {
+                        if (SDL_JoystickGetButton(g_joysticks[dev], g_padJoy[p][b].id))
+                            g_game.input.padState[p] |= (1u << b);
+                    }
+                } else if (g_padJoy[p][b].type == JOY_BIND_HAT) {
+                    int dev = g_padJoy[p][b].device;
+                    if (dev >= 0 && dev < MAX_JOYSTICKS && g_joysticks[dev]) {
+                        if (SDL_JoystickGetHat(g_joysticks[dev], 0) & g_padJoy[p][b].id)
+                            g_game.input.padState[p] |= (1u << b);
                     }
                 }
             }
@@ -342,5 +642,11 @@ bool Input_IsKeyDown(int key) {
 }
 
 void Input_Shutdown(void) {
+    for (int i = 0; i < MAX_JOYSTICKS; i++) {
+        if (g_joysticks[i]) {
+            SDL_JoystickClose(g_joysticks[i]);
+            g_joysticks[i] = NULL;
+        }
+    }
     Log_Print("Input: shutdown\n");
 }

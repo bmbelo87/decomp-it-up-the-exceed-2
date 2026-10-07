@@ -79,7 +79,7 @@ bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) 
 #ifdef SDL_MAIN_HANDLED
     SDL_SetMainReady(); /* main() próprio (sem SDL2main): necessário no Windows */
 #endif
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK) != 0) {
         Log_Print("SDL: SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }

@@ -5,7 +5,7 @@
 #include "zlibinflate.h"
 
 int main(void) {
-    FILE* f = fopen("E:/Pumps/PREX3-Original/STEP/101.STX", "rb");
+    FILE* f = fopen("F:/14_px3/gamePC/STEP/101.STX", "rb");
     if (!f) { printf("FAIL: open\n"); return 1; }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);

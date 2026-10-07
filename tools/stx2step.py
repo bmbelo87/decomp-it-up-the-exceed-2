@@ -63,7 +63,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/../STEP"
 def convert_song(song_id):
     stx_path = f"{BASE}/{song_id}.STX"
     if not os.path.exists(stx_path):
-        stx_path = f"E:/Pumps/PREX3-Original/STEP/{song_id}.STX"
+        stx_path = f"F:/14_px3/gamePC/STEP/{song_id}.STX"
     if not os.path.exists(stx_path):
         return None
     
@@ -115,7 +115,7 @@ if __name__ == '__main__':
     for sid in songs:
         result = convert_song(sid)
         if result:
-            outpath = f"E:/Pumps/PREX3-Original/STEP/{sid}.txt"
+            outpath = f"F:/14_px3/gamePC/STEP/{sid}.txt"
             with open(outpath, 'w', encoding='utf-8') as f:
                 f.write(result)
             print(f"Wrote {outpath}", flush=True)

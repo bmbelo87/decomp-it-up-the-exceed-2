@@ -4,7 +4,7 @@
 #include <string.h>
 
 int main(void) {
-    FILE* f = fopen("E:/Pumps/PREX3-Original/STEP/101.decompressed", "rb");
+    FILE* f = fopen("F:/14_px3/gamePC/STEP/101.decompressed", "rb");
     if (!f) return 1;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);

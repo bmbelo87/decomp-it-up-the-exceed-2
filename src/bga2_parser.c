@@ -63,6 +63,6 @@ void BGA2_DumpEvents(const char* filename) {
 }
 
 int main() {
-    BGA2_DumpEvents("E:\\Pumps\\PREX3-Original\\BGA\\R_WARN.DAT");
+    BGA2_DumpEvents("F:\\14_px3\\gamePC\\BGA\\R_WARN.DAT");
     return 0;
 }

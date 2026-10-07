@@ -8,17 +8,25 @@ static float lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
-static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t) {
+/* Hot (pivô) separado por formato (decisão do projeto, 02/10/2026):
+ *   BGA3 (Exceed2): interpolado A + (B-A)*t — PIU32.EXE 0x41E963..0x41E9B5.
+ *     Sem isso a entrada das cenas (ex.: PERFECT do 00.BGA, hot 20 -> 10) salta.
+ *   BGA2 (Prex3/Exceed): hot do keyframe A — exceed.exe 0x41F43E lê o hot direto
+ *     do keyframe A. Os .BGA2 foram feitos com essa regra: interpolando, a roda do
+ *     111 (HATRED!, escala 5x) e os bbi_45/46 do 814 (JOIN THE PARTY) deslizam.
+ *     Obs.: o PIU32.EXE interpola também no BGA2 (loader 0x41DEA0 copia o hot para
+ *     +0x10/+0x14); aqui o BGA2 segue a regra do jogo para o qual foi feito. */
+static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t, int picVersion) {
     BGAKeyframe r;
     r.x = lerp(a->x, b->x, t);
     r.y = lerp(a->y, b->y, t);
-    /* Exceed2 0x41E963..0x41E9B5: o hot também é interpolado (A + (B-A)*t),
-     * no caminho comum de BGA2 e BGA3. Antes ficava o do keyframe A, o que
-     * fazia a entrada das cenas (ex.: PERFECT do 00.BGA, hot 20 -> 10) saltar. */
-    r.hotx = lerp(a->hotx, b->hotx, t);
-    r.hoty = lerp(a->hoty, b->hoty, t);
-    /* r.hotx = a->hotx; */
-    /* r.hoty = a->hoty; */
+    if (picVersion == 3) {
+        r.hotx = lerp(a->hotx, b->hotx, t);
+        r.hoty = lerp(a->hoty, b->hoty, t);
+    } else {
+        r.hotx = a->hotx;
+        r.hoty = a->hoty;
+    }
     r.scaleX = lerp(a->scaleX, b->scaleX, t);
     r.scaleY = lerp(a->scaleY, b->scaleY, t);
     if (a->scaleY == 0.0f && b->scaleY == 0.0f) r.scaleY = r.scaleX;
@@ -35,7 +43,7 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t) {
     return r;
 }
 
-static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outAnimT) {
+static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outAnimT, int picVersion) {
     static BGAKeyframe result;
     if (outAnimT) *outAnimT = 0.0f;
     if (layer->kfCount == 0) return NULL;
@@ -62,7 +70,7 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outA
     int span = b->frame - a->frame;
     float t = (span > 0) ? (float)(frameNum - a->frame) / span : 0.0f;
 
-    result = lerp_kf(a, b, t);
+    result = lerp_kf(a, b, t, picVersion);
     /* blendMode vem do keyframe A (inicio do segmento atual) — igual ao original:
        BGA_RenderLayer usa *(short*)(pfVar1 - 4) onde pfVar1 aponta para B, logo A+0x30 */
     result.blendMode = layer->keyframes[segIdx].blendMode;
@@ -665,7 +673,7 @@ void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
     if (layer->kfCount == 0) return;
 
     float animT = 0.0f;
-    BGAKeyframe* state = interpolate_layer(layer, frame, &animT);
+    BGAKeyframe* state = interpolate_layer(layer, frame, &animT, pic->version);
 
     /* DBG: loga estado de hall.spr nas transições importantes */
     if (strstr(layer->filename, "hall")) {
@@ -872,7 +880,7 @@ bool BGA_GetSlotPos(int bgaIndex, int frame, int slot, float* x, float* y) {
     BGALayer* l = bga_slotLayer(bgaIndex, slot);
     if (!l || l->kfCount == 0) return false;
     if (frame < l->keyframes[0].frame || frame >= l->keyframes[l->kfCount - 1].frame) return false;
-    BGAKeyframe* st = interpolate_layer(l, frame, NULL);
+    BGAKeyframe* st = interpolate_layer(l, frame, NULL, g_game.bgaPics[bgaIndex].version);
     if (!st || st->type == 0 || st->a <= 0.01f) return false;
     *x = st->x;
     *y = st->y;

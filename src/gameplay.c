@@ -571,6 +571,8 @@ static int g_p1FlashTimer[2][MAX_PANELS]; // tile p1: zoom+fade ao pressionar
 static int g_noteState[2][MAX_PANELS]; // 0=normal, 1=exploding, 2=dead
 static int g_noteExplodeRow[2][MAX_PANELS]; // row index for clearing when dead
 static int g_noteExplodeFrame[2][MAX_PANELS]; // explosion frame counter 0..15
+static void holdHitFx(int player, int pan, int row);
+static bool rowOnlyLong(int player, int row);
 static int g_blindTimer[2];
 static int g_prevBlindRow;
 static int g_lastPerfectRow[2][MAX_PANELS];
@@ -1035,6 +1037,8 @@ static void processPendingRows(int player) {
             jt = evaluateTiming(g_pending[i].worstDiff);
         else
             jt = JT_MISS;
+        /* long na linha: qualquer zona = PERFECT (ver rowOnlyLong) */
+        if (jt != JT_MISS && rowOnlyLong(player, g_pending[i].row)) jt = JT_PERFECT;
         for (int pan = 0; pan < jdPanels; pan++) {
             uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
             if (!pv) continue;
@@ -1047,6 +1051,7 @@ static void processPendingRows(int player) {
                     else {
                         g_holdRows[hdPly][pan] = g_pending[i].row;
                         holdOpenDbg("pend-HD", hdPly, pan, g_pending[i].row);
+                        holdHitFx(hdPly, pan, g_pending[i].row);
                         if (hdCheck) clearHDPanel(&g_chart->rows[g_pending[i].row], pan);
                         else clearDNPanel(&g_chart->rows[g_pending[i].row], pan);
                     }
@@ -1058,6 +1063,7 @@ static void processPendingRows(int player) {
                         g_holdRows[player][pan] = g_pending[i].row;
                 holdOpenDbg("pend", player, pan, g_pending[i].row);
                         holdOpenDbg("pend-DN", player, pan, g_pending[i].row);
+                        holdHitFx(player, pan, g_pending[i].row);
                         clearPanel(&g_chart->rows[g_pending[i].row], pan, player);
                     }
                 }
@@ -1308,6 +1314,8 @@ static void processInput(int player)
                     g_pending[slot].active = false;
                     g_pendingCount--;
                     JudgeType pjt = evaluateTiming(g_pending[slot].worstDiff);
+                    /* long na linha: qualquer zona = PERFECT (ver rowOnlyLong) */
+                    if (pjt != JT_MISS && rowOnlyLong(player, bestRow)) pjt = JT_PERFECT;
                     for (int pan = 0; pan < panCount; pan++) {
                         uint8_t pv = isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player));
                         if (!pv) continue;
@@ -1318,6 +1326,7 @@ static void processInput(int player)
                                 else {
                                     g_holdRows[player][pan] = bestRow;
                                     holdOpenDbg("input", player, pan, bestRow);
+                                    holdHitFx(player, pan, bestRow);
                                     clearHDPanel(&g_chart->rows[bestRow], pan);
                                 }
                             } else if (isDN) {
@@ -1326,6 +1335,7 @@ static void processInput(int player)
                                 else {
                                     g_holdRows[player][pan] = bestRow;
                                     holdOpenDbg("input", player, pan, bestRow);
+                                    holdHitFx(player, pan, bestRow);
                                     clearDNPanel(&g_chart->rows[bestRow], pan);
                                 }
                             } else {
@@ -1335,6 +1345,7 @@ static void processInput(int player)
                                 else {
                                     g_holdRows[player][pan] = bestRow;
                                     holdOpenDbg("input", player, pan, bestRow);
+                                    holdHitFx(player, pan, bestRow);
                                     clearPanel(&g_chart->rows[bestRow], pan, player);
                                 }
                             }
@@ -1404,6 +1415,8 @@ static void processInput(int player)
 
         g_nextNoteRow[player][panel] = bestRow + 1;
         JudgeType jt = evaluateTiming(bestDiff);
+        /* long na linha: qualquer zona = PERFECT (ver rowOnlyLong) */
+        if (jt != JT_MISS && rowOnlyLong(player, bestRow)) jt = JT_PERFECT;
         if (jt == JT_PERFECT || jt == JT_GREAT) {
             for (int pan = 0; pan < panCount; pan++)
                 if (isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player))) {
@@ -1556,6 +1569,49 @@ static void processAutoplay(void)
     }
 }
                 
+/* Explosão/glow da seta ao pegar a cabeça do long. X1Rus playengine.cpp
+ * (~2773): nota longa julgada em QUALQUER zona faz m_LongFade = 1 e
+ * m_AniFade = 0. Antes o port só disparava o efeito via processRowJudgment,
+ * que pula GOOD/BAD. Mesmos campos usados em processHolds. */
+static void holdHitFx(int player, int pan, int row)
+{
+    g_noteState[player][pan] = 1;
+    g_noteExplodeRow[player][pan] = row;
+    g_noteExplodeFrame[player][pan] = 0;
+    g_glowTimer[player][pan] = 24;
+}
+
+/* Linha SÓ com nota longa (H/B/T), sem tap, para o jogador. X1Rus playengine.cpp
+ * (~2773): long julgado em qualquer zona = JUDGE_PERFECT; fora da zona (ou sem
+ * botão) é MISS. Não existe GREAT/GOOD/BAD de long.
+ * Linha com long + tap: vale o julgamento do tap pelo tempo (conta uma vez no
+ * combo; long solto nessa linha = MISS, tratado em processPendingRows). */
+static bool rowOnlyLong(int player, int row)
+{
+    bool isHD = isHDMode(), isDN = isDNMode();
+    int panCount = isHD ? 6 : (isDN ? 10 : 5);
+    bool hasLong = false;
+    for (int pan = 0; pan < panCount; pan++) {
+        uint8_t v = isHD ? getNoteHD(&g_chart->rows[row], pan)
+                  : (isDN ? getDNPanelValue(&g_chart->rows[row], pan)
+                  : getPanelValue(&g_chart->rows[row], pan, player));
+        if (v == NT_HOLD_H || v == NT_HOLD_B || v == NT_HOLD_T) hasLong = true;
+        else if (v) return false;   /* tem tap: julgamento do tap */
+    }
+    return hasLong;
+}
+
+/* Botão do painel apertado AGORA (long_stat do X1Rus DrawStepLine), sem
+ * depender do estado de captura do hold. Mesmo mapeamento de processHolds. */
+static bool holdPanelDown(int p, int panel)
+{
+    if (g_autoPanel[panel]) return true;
+    if (isHDMode()) return Input_IsPadDown(hdPanelPlayer(panel), hdPanelBtn(panel));
+    if (isDNMode()) return Input_IsPadDown(dnPanelPlayer(panel), dnPanelBtn(panel));
+    static const PadButton panelToBtn[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+    return Input_IsPadDown(p, panelToBtn[panel]);
+}
+
 static void processHolds(void)
 {
     if (!g_songLoaded) return;
@@ -1617,8 +1673,10 @@ static void processHolds(void)
                             if (pan != panel && (isHD ? getNoteHD(&g_chart->rows[ri], pan) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], pan) : getPanelValue(&g_chart->rows[ri], pan, p)))) { hasTap = 1; break; }
                         if (!hasTap) {
                             /* grade pelo tempo real (re-aperto tardio dá Great/Good/Bad) e com life */
-                            JudgeType hjt = evaluateTiming(diff);
-                            if (hjt == JT_MISS) hjt = JT_BAD;
+                            /* era: evaluateTiming(diff), MISS -> BAD. Long no original
+                             * é sempre PERFECT dentro da zona (ver rowOnlyLong). */
+                            JudgeType hjt = JT_PERFECT;
+                            (void)diff;
                             applyRowJudgment(p, hjt);
                         }
                         /* Captura é uma só. Sem este break o laço seguia varrendo
@@ -1684,8 +1742,9 @@ static void processHolds(void)
                     g_noteExplodeFrame[p][panel] = 0;
                     g_glowTimer[p][panel] = 24;
                     if (!hasUnjudgedTap) {
-                        JudgeType hjt = evaluateTiming(g_songTime - rowTime);
-                        if (hjt == JT_MISS) hjt = JT_BAD;
+                        /* era: evaluateTiming(g_songTime - rowTime), MISS -> BAD.
+                         * Long no original é sempre PERFECT (ver rowOnlyLong). */
+                        JudgeType hjt = JT_PERFECT;
                         applyRowJudgment(p, hjt);
                     }
                 }
@@ -1835,6 +1894,9 @@ void Gameplay_Start(int songId)
      * julgamento/combo são cenas dele. Fica como mais um BGA depois do da música. */
     g_exJudgeBga = -1;
     memset(g_exJudgeCnt, 0, sizeof(g_exJudgeCnt));
+    /* Sem isto o tipo do último julgamento da música anterior ficava, e com o
+     * contador em 0 o PERFECT/MISS dele tocava no início da música seguinte. */
+    g_judgeDisplayType[0] = g_judgeDisplayType[1] = JT_NONE;
     if (g_exceedSongIds) exLoadSkin();   /* Exceed2 0x404350: SKIN0X.DAT */
     if (g_exceedSongIds && Resource_LoadBGAByName("00")) {
         int bi = g_game.bgaPicCount - 1;
@@ -2804,6 +2866,8 @@ void Gameplay_Render(void)
         #define XM_DX(yy) (xmS * ((yy) - xmY0))
         #define XM_DXP(pn, yy) (XM_S(pn) * ((yy) - xmY0))
 
+        bool exHeldHead[MAX_PANELS] = { false };
+        float exHeadY[MAX_PANELS] = { 0 };   /* Y da cabeça do hold redesenhada (Exceed) */
         // Pass 0: Hold bodies (esticados entre runs de NT_HOLD_B)
         if (g_fontArrowETC >= 0) {
             for (int panel = 0; panel < panelCount; panel++)
@@ -2849,9 +2913,32 @@ void Gameplay_Render(void)
                     }
 
                     if (ownedByActive) {
-                        /* HOLD SEGURADO (PERFECT): body começa exatamente na linha do receptor.
-                         * Independe de velocidade ou de rows processadas — sem gap. */
+                        /* HOLD SEGURADO: body começa no receptor (X1Rus playengine.cpp
+                         * DrawStepLine, ramo "m_CurY > 0.0f && long_stat": m_CurY > 0 = linha
+                         * AINDA NÃO chegou, já que m_Y diminui com o tempo; corpo e cabeça
+                         * são transladados de volta ao receptor). */
                         y1 = (float)(receptorY + rh2 / 2);
+                        /* era (leitura invertida do m_CurY, cabeça "caminhava" até o receptor):
+                        float vh = (activeHold < g_visualRowCount && g_visualRow) ? (float)g_visualRow[activeHold] : (float)activeHold;
+                        float yh = (float)(receptorY + rh2 / 2 + (vh - visualScrollRow) * pPixelsPerRow);
+                        y1 = (yh > (float)(receptorY + rh2 / 2)) ? yh : (float)(receptorY + rh2 / 2);
+                        */
+                    } else if (g_exceedSongIds && ri > 0 &&
+                               (isHalfDouble ? getNoteHD(&g_chart->rows[ri - 1], panel)
+                               : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri - 1], panel)
+                               : getPanelValue(&g_chart->rows[ri - 1], panel, p))) == 0) {
+                        /* Corpo sem cabeça (linha anterior já consumida) e sem hold
+                         * capturado. X1Rus DrawStepLine, MIDDLE com NOTE(-1) == 0:
+                         *   botão apertado e linha ainda não chegou (m_CurY > 0)
+                         *     -> corpo e seta presos no receptor;
+                         *   senão -> seta desenhada na própria linha, corpo dali.
+                         * Antes o port desenhava só o corpo, cortado reto e sem seta. */
+                        float yr = (float)(receptorY + rh2 / 2);
+                        if (holdPanelDown(p, panel) && y1 >= yr) y1 = yr;
+                        if (!exHeldHead[panel] && !g_game.cmdNonStep[p]) {   /* só o 1º run (o de cima) */
+                            exHeldHead[panel] = true;
+                            exHeadY[panel] = y1;
+                        }
                     } else {
                         /* MISS / não segurado: ancora topo do body no centro do HoldHead (ri-1)
                          * para eliminar o buraco visual entre head e body. */
@@ -2926,7 +3013,6 @@ void Gameplay_Render(void)
          *           corpo (y_interp + 30 + CurY*speed/1000 .. 55); aqui os corpos
          *           consumidos já foram apagados por clearPanel, então sem este
          *           bloco sobrava um buraco entre o receptor e a ponta. */
-        bool exHeldHead[MAX_PANELS] = { false };
         if (g_exceedSongIds && g_fontArrowETC >= 0 && !g_game.cmdNonStep[p]) {
             #define EX_PV(r, pn) (isHalfDouble ? getNoteHD(&g_chart->rows[r], pn) \
                                : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[r], pn) \
@@ -2938,7 +3024,11 @@ void Gameplay_Render(void)
                 for (int ri = hr + 1; ri < (int)g_chart->rowCount; ri++) {
                     uint8_t v = EX_PV(ri, panel);
                     if (!v) continue;
-                    if (v == NT_HOLD_B) exHeldHead[panel] = true;
+                    if (v == NT_HOLD_B) {
+                        /* DrawStepLine: segurado, a seta fica no receptor */
+                        exHeadY[panel] = (float)(receptorY + rh2 / 2);
+                        exHeldHead[panel] = true;
+                    }
                     else if (v == NT_HOLD_T) tailRi = ri;
                     break;
                 }
@@ -3127,7 +3217,7 @@ void Gameplay_Render(void)
             int aidx = arrowSpr + arrowAnimFrame();
             float sw = (float)g_game.sprTiles[aidx].srcW;
             float sh = (float)g_game.sprTiles[aidx].srcH;
-            float y = (float)(receptorY + rh2 / 2);
+            float y = exHeadY[panel];   /* era: (float)(receptorY + rh2 / 2) */
             /* Exceed2: cabeça presa no receptor pela skin (skinN_l1) */
             if (arrowGroup >= 0 && arrowGroup < 5 && g_skinL1[arrowGroup] >= 0) {
                 int sIdx = g_skinL1[arrowGroup] + arrowAnimFrame();

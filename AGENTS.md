@@ -314,7 +314,7 @@ Avoid mixing speculation with confirmed information.
 **Compilation + copy:**
 
 ```sh
-cmake --build build --target Pumpy --config Debug -- /m; if ($?) { Copy-Item -LiteralPath "build\Debug\Pumpy.exe" "E:\Pumps\Exceed2 PC\Exceed2 PC\X2TESTE.EXE" -Force }
+cmake --build build --target Pumpy --config Debug -- /m; if ($?) { Copy-Item -LiteralPath "build\Debug\Pumpy.exe" "F:\16_exc2\game\X2TESTE.EXE" -Force }
 ```
 
 Assets are copied automatically. O target `Pumpy` evita buildar as ferramentas (dump_bga2, etc.).
@@ -508,7 +508,7 @@ Implementar tela de Staff (créditos) ativada via DL 2x no menu.
 ### Key Fixes
 
 1. **Tela branca**: causada por `Render_SetGlobalColor(1,1,1,1)` em Staff_Enter — overlay branco full-alpha tampava o BGA
-2. **File path**: `Resource_LoadBGADirect("BGA\\STAFF.DAT")` funciona do diretório raiz do jogo (`E:\Pumps\PREX3-Original\`) sem precisar de fallback `assets/`
+2. **File path**: `Resource_LoadBGADirect("BGA\\STAFF.DAT")` funciona do diretório raiz do jogo (`F:\14_px3\gamePC\`) sem precisar de fallback `assets/`
 
 ### Known
 

@@ -940,6 +940,13 @@ void Game_MainLoop(void) {
         if (elapsed > 250.0) elapsed = 250.0;
         accumulator += elapsed;
 
+        /* Extra do port: detector de travadas. Mede update/render deste giro e,
+         * se passar de 50 ms, grava no log onde o tempo foi gasto. */
+        extern double g_movieMs, g_logMs;
+        double hzF = (double)SDL_GetPerformanceFrequency();
+        uint64_t hz0 = SDL_GetPerformanceCounter();
+        g_movieMs = 0.0; g_logMs = 0.0;
+
         int steps = 0;
         while (accumulator >= STEP_MS && steps < MAX_CATCHUP) {
             accumulator -= STEP_MS;
@@ -959,8 +966,18 @@ void Game_MainLoop(void) {
         bool extra = g_game.vsync && g_game.state == STATE_GAMEPLAY;
         if (steps > 0 || extra) {
             g_renderTick = (steps > 0);
+            uint64_t hz1 = SDL_GetPerformanceCounter();
+            double movUpd = g_movieMs, logUpd = g_logMs;
             Game_Render();       /* o swap com vsync bloqueia até o refresh */
             g_renderTick = true;
+            uint64_t hz2 = SDL_GetPerformanceCounter();
+            double updMs = (double)(hz1 - hz0) * 1000.0 / hzF;
+            double rndMs = (double)(hz2 - hz1) * 1000.0 / hzF;
+            if (updMs + rndMs > 50.0 || elapsed > 50.0) {
+                double logTot = g_logMs;
+                Log_Print("HITCH: gap=%.0f ms update=%.1f ms (%d passos, video=%.1f, log=%.1f) render=%.1f ms (log=%.1f) estado=%d\n",
+                          elapsed, updMs, steps, movUpd, logUpd, rndMs, logTot - logUpd, (int)g_game.state);
+            }
         } else {
             Sleep(1);            /* nada a fazer neste giro */
         }
