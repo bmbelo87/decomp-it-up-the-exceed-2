@@ -120,10 +120,23 @@ static void pack_decrypt(uint8_t* data, uint32_t len, const uint8_t* key16) {
 
 /* PIU32.EXE 0x420610: out[i] = in[i] ^ k[i&3], k[j] = (k[j] + i) ^ 0x1C.
  * Os 4 bytes iniciais de k vêm de 0x43f220 (stub de dongle, senha 0xA5A5);
- * os .AUD/.PNZ do jogo foram cifrados com resposta 0 (recuperado por texto
- * conhecido e conferido com o Adler-32 de 0x423b40). */
+ * a resposta depende dos 16 bytes de entrada (0x485024/0x48502c), então muda
+ * por arquivo. Sem o dongle, vem de g_dongleTable (dongle_table.c, recuperada
+ * dos arquivos originais por solve_dongle.py); fora da tabela = 0, que é o
+ * caso das cópias regravadas sem cifra. */
+extern const uint8_t g_dongleTable[][20];
+extern const int g_dongleTableCount;
+
 static void x2_derive_key(int n, const uint8_t* in, uint8_t* out) {
     uint8_t k[4] = { 0, 0, 0, 0 };
+    if (n == 16) {
+        for (int t = 0; t < g_dongleTableCount; t++) {
+            if (memcmp(g_dongleTable[t], in, 16) == 0) {
+                memcpy(k, g_dongleTable[t] + 16, 4);
+                break;
+            }
+        }
+    }
     for (int i = 0; i < n; i++) {
         out[i] = (uint8_t)(in[i] ^ k[i & 3]);
         k[i & 3] = (uint8_t)((k[i & 3] + i) ^ 0x1C);
@@ -196,7 +209,9 @@ static bool respack_load(RESArchive* res) {
     uint8_t x2G[16];
     if (isX2) x2_derive_key(16, d + 0x18, x2G);
     int n = (int)*(uint32_t*)(d + 0x0C);
-    uint32_t hdr = (*(uint32_t*)(d + 0x18) == 0) ? 0x28 : 0x18;
+    /* RESPAC2: cabeçalho sempre 0x28 (0x18..0x27 = chave H, lida em 0x421c40).
+     * O teste "DWORD em 0x18 == 0" só valia nas cópias regravadas com H zerado. */
+    uint32_t hdr = isX2 ? 0x28 : ((*(uint32_t*)(d + 0x18) == 0) ? 0x28 : 0x18);
     uint32_t idxSize = (uint32_t)n * RESPACK_ENTRY;
     if (n <= 0 || hdr + idxSize > res->fileSize) return false;
 

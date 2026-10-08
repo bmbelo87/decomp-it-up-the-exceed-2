@@ -159,19 +159,23 @@ bool Movie_Open(const char* path, bool loop) {
         Log_Print("MOVIE: '%s' aberto (MPEG puro, %.3f fps, loop=%d)\n", path, g_mov.fps, loop);
         return true;
     }
-    if (hdrGot != sizeof(hdr) || memcmp(hdr, "MOV2", 4) != 0) {
-        Log_Print("MOVIE: '%s' nao e MOV2\n", path);
+    /* MOV3 (arquivos originais do Exceed2, mesmo layout do Zero, piu 0x80a30e0):
+     * 16 B de chave extra antes do lixo de hdr[0x88] bytes; o resto segue o
+     * MOV2 e o vídeo começa em 0xD0 + N. */
+    int mov3 = hdrGot == sizeof(hdr) && memcmp(hdr, "MOV3", 4) == 0;
+    if (hdrGot != sizeof(hdr) || (!mov3 && memcmp(hdr, "MOV2", 4) != 0)) {
+        Log_Print("MOVIE: '%s' nao e MOV2/MOV3\n", path);
         fclose(f); return false;
     }
     uint32_t n = *(uint32_t*)(hdr + 0x88);
     uint8_t tail[0x34];
-    fseek(f, (long)n, SEEK_CUR);
+    fseek(f, (long)n + (mov3 ? 0x10 : 0), SEEK_CUR);
     if (fread(tail, 1, sizeof(tail), f) != sizeof(tail)) { fclose(f); return false; }
     uint8_t k = bitrev8(tail[0x30]);
     for (int b = 0; b < 256; b++) g_mov.table[b] = (uint8_t)(bitrev8((uint8_t)b) ^ k);
 
     g_mov.f = f;
-    g_mov.dataStart = n + 0xC0;
+    g_mov.dataStart = n + (mov3 ? 0xD0 : 0xC0);
     fseek(f, (long)g_mov.dataStart, SEEK_SET);
     uint8_t first[8];
     size_t got = fread(first, 1, sizeof(first), f);

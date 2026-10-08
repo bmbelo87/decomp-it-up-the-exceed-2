@@ -156,6 +156,7 @@ add_executable(Pumpy
     src/df_resource.c
     src/util.c
     src/resource.c
+    src/dongle_table.c
     src/step.c
     src/song.c
     src/zlibinflate.c
@@ -193,6 +194,14 @@ endif()
 if(WIN32 AND TARGET SDL2::SDL2)
     add_custom_command(TARGET Pumpy POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:Pumpy>
+        VERBATIM)
+endif()
+
+# Windows: MPEG2.dll (libmpeg2) dos vídeos .MOV. O PIU32.EXE original também a
+# importa, mas ela não vem em todas as instalações (movie.c, LoadLibrary).
+if(WIN32)
+    add_custom_command(TARGET Pumpy POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/third_party/MPEG2.dll" $<TARGET_FILE_DIR:Pumpy>
         VERBATIM)
 endif()
 
