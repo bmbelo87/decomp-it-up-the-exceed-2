@@ -81,21 +81,35 @@ void Loading_Update(float dt) {
 
             Resource_ClearBGA();
 
-            /* exceed.exe 0x402243: testa BGA\%s.MOV (0x4254E4 = fopen "rb");
-             * se existe, 0x4229C8(path, 0) sem loop e [+0x17C2C] = 2 (0x402688);
-             * senão BGA\%s.DAT. O vídeo é aberto junto com a música, abaixo. */
+            /* PIU32.EXE 0x404346..0x40479B ([+0x19ACC]):
+             *   BGA\%s.DAT existe (0x423AB0) -> carrega o DAT (= 1);
+             *   senão BGA\%s.MOV -> 0x420C00(path, 0) sem loop (= 2);
+             *   senão BGA\000.MOV -> 0x420C00(path, 1) EM LOOP (= 2) — fundo das
+             *   músicas sem BGA próprio (os REMIX);
+             *   senão nada (0x423270, = 3).
+             * era (exceed.exe 0x402243): .MOV antes do .DAT e sem o 000.MOV.
+             * O vídeo é aberto junto com a música, abaixo. */
+            char bgaPath[MAX_PATH];
+            snprintf(bgaPath, sizeof(bgaPath), "%s/BGA/%s.DAT", g_game.currentDirectory, Song_DataIdStr(g_loadingSongId));
             char movPath[MAX_PATH];
             snprintf(movPath, sizeof(movPath), "%s/BGA/%s.MOV", g_game.currentDirectory, Song_DataIdStr(g_loadingSongId));
             Movie_Close();
-            FILE* mf = fopen(movPath, "rb");
-            bool useMov = (mf != NULL);
-            if (mf) fclose(mf);
-
-            char bgaPath[MAX_PATH];
-            snprintf(bgaPath, sizeof(bgaPath), "%s/BGA/%s.DAT", g_game.currentDirectory, Song_DataIdStr(g_loadingSongId));
-            if (!useMov) {
+            bool useMov = false, movLoop = false;
+            FILE* tf = fopen(bgaPath, "rb");
+            if (tf) {
+                fclose(tf);
                 Log_Print("Loading: loading BGA '%s'\n", bgaPath);
                 Resource_LoadBGADirect(bgaPath);
+            } else if ((tf = fopen(movPath, "rb")) != NULL) {
+                fclose(tf);
+                useMov = true;
+            } else {
+                snprintf(movPath, sizeof(movPath), "%s/BGA/000.MOV", g_game.currentDirectory);
+                if ((tf = fopen(movPath, "rb")) != NULL) {
+                    fclose(tf);
+                    useMov = true;
+                    movLoop = true;
+                }
             }
             g_game.bgaLoop = false;
             BGA_Reset();
@@ -119,7 +133,7 @@ void Loading_Update(float dt) {
              * era: Movie_Open depois da espera. */
             if (useMov) {
                 Log_Print("Loading: loading MOV '%s'\n", movPath);
-                if (Movie_Open(movPath, false)) {
+                if (Movie_Open(movPath, movLoop)) {
                     Movie_Preload();
                     Movie_Prime();
                 }

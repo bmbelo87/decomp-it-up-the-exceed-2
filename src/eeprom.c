@@ -130,10 +130,37 @@ static void eepFromGame(void) {
     eepStamp();
 }
 
+/* Exceed2: as opções e o bookkeeping ficam no PIUEXCEED2.INI (eeprom_x2.c).
+ * Bytes conferidos no PIU32.EXE (GAME/COIN OPTION 0x4185B8.., moeda 0x41F8F0):
+ *   7EC modo (1 = EVENT)  7ED LEVEL  7EE STAGE BREAK  7EF idioma  7F0 DEMO SOUND
+ *   7F1 ajuda  7F2 COIN1 (0 = FREE PLAY)  7F3 COIN2
+ *   7F4 / 7F8 / 7FC  totais COIN1 / COIN2 / SERVICE (u32)
+ * O acumulador de créditos (svcCoinTotal) fica só em memória, como no original. */
+static uint32_t x2Get32(const uint8_t* x, int o) {
+    return (uint32_t)x[o] | ((uint32_t)x[o + 1] << 8) | ((uint32_t)x[o + 2] << 16) | ((uint32_t)x[o + 3] << 24);
+}
+static void x2Put32(uint8_t* x, int o, uint32_t v) {
+    x[o] = (uint8_t)v; x[o + 1] = (uint8_t)(v >> 8); x[o + 2] = (uint8_t)(v >> 16); x[o + 3] = (uint8_t)(v >> 24);
+}
+
 /* Grava a imagem (PUMPY.EXE 0x405190). */
 void Eeprom_Save(void) {
-    char path[MAX_PATH];
+    uint8_t* x = Eeprom2_Data();
+    x[0x7EC] = (uint8_t)g_game.svcGameMode;
+    x[0x7ED] = (uint8_t)g_game.optionDifficulty;
+    x[0x7EE] = (uint8_t)g_game.optionToggle1;
+    x[0x7EF] = (uint8_t)g_game.svcLangOption;
+    x[0x7F0] = (uint8_t)g_game.svcDemoSound;
+    x[0x7F1] = (uint8_t)g_game.optionToggle2;
+    x[0x7F2] = (uint8_t)g_game.svcCoin1;
+    x[0x7F3] = (uint8_t)g_game.svcCoin2;
+    x2Put32(x, 0x7F4, (uint32_t)g_game.svcCoin1Total);
+    x2Put32(x, 0x7F8, (uint32_t)g_game.svcCoin2Total);
+    x2Put32(x, 0x7FC, (uint32_t)g_game.svcServiceTotal);
+    Eeprom2_Save();
+#if 0  /* DESATIVADO (08/10/2026): imagem do Prex3 (pumpprex3.ini) */
     eepFromGame();
+    char path[MAX_PATH];
     eepPath(path, sizeof(path));
     FILE* f = fopen(path, "wb");
     if (!f) {
@@ -142,12 +169,30 @@ void Eeprom_Save(void) {
     }
     fwrite(g_eep, 1, sizeof(g_eep), f);
     fclose(f);
+#endif
 }
 
 /* Lê e valida a imagem (PUMPY.EXE 0x4067a0) e aplica em g_game.
  * Retorno: 1 = arquivo válido; 0 = arquivo inválido (resetado, com o aviso do original);
  *          -1 = arquivo ausente (defaults em g_game; quem chamou decide migrar/gravar). */
 int Eeprom_Load(void) {
+    /* Exceed2: lê do PIUEXCEED2.INI (ver Eeprom_Save); Eeprom2_Load já valida e
+     * aplica os padrões do PIU32.EXE (0x421DE0) */
+    const uint8_t* x = Eeprom2_Data();
+    g_game.svcGameMode      = x[0x7EC];
+    g_game.optionDifficulty = x[0x7ED];
+    g_game.optionToggle1    = x[0x7EE];
+    g_game.svcLangOption    = x[0x7EF];
+    g_game.svcDemoSound     = x[0x7F0];
+    g_game.optionToggle2    = x[0x7F1];
+    g_game.svcCoin1         = x[0x7F2];
+    g_game.svcCoin2         = x[0x7F3];
+    g_game.svcCoin1Total    = (int)x2Get32(x, 0x7F4);
+    g_game.svcCoin2Total    = (int)x2Get32(x, 0x7F8);
+    g_game.svcServiceTotal  = (int)x2Get32(x, 0x7FC);
+    g_game.svcCoinTotal     = 0;
+    return 1;
+#if 0  /* DESATIVADO (08/10/2026) */
     char path[MAX_PATH];
     eepPath(path, sizeof(path));
     Log_Print("EEPROM: loading %s\n", path);
@@ -176,4 +221,5 @@ int Eeprom_Load(void) {
     }
     eepToGame();
     return 1;
+#endif
 }
