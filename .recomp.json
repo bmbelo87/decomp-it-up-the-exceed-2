@@ -1,0 +1,14 @@
+{
+  "game": "Pump It Up: Exceed 2",
+  "system": ["Arcade", "PC (Windows)"],
+  "type": "decomp",
+  "status": "released",
+  "targets": ["Windows", "Linux"],
+  "toolchain": ["Ghidra", "SDL2", "OpenGL"],
+  "project": "Exceed2Reconstructed",
+  "approach": "Faithful C reconstruction of the Exceed 2 executable (x86), no emulation, native SDL2 + OpenGL.",
+  "notes": "Builds on ExceedReconstructed with the Exceed 2 song list, screens and rules.",
+  "tags": ["rhythm", "dance", "andamiro", "pump-it-up"],
+  "maintainers": [{ "name": "bmbelo87", "link": "https://github.com/bmbelo87" }],
+  "links": [{ "label": "Releases", "url": "https://github.com/bmbelo87/decomp-it-up-the-exceed-2/releases" }]
+}

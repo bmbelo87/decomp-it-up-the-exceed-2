@@ -17,3 +17,5 @@ tools/res_extract
 
 __pycache__/
 build-static/
+
+!/.recomp.json
