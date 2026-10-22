@@ -830,3 +830,41 @@ e `g_cdLoaded` continuam ativos.
   empate → maior score; empate de score → P1.
 - **Nomes dos bits** (`pump.h` do src original): `0x200 VRAND`, `0x400 RACCEL` (rv), `0x800 FREEDOM`, `0x1000 EARTHWORM`,
   `0x2000 SHOWHIDDEN`, `0x8000 EXCEED` (X-MODE), `0x10000 ARROW_STAR` (comentado no original).
+
+## Exceed2 — BATTLE STATION (21/10/2026)
+
+### Fatos (confirmados no assembly do PIU32.EXE; painel da Select vem do arcade `game\piu`)
+
+- Station `0x419FE0`: BATTLE → `[0x484F7C] |= 3` (os dois entram), `[0x484FB4] = 2`. Uma música por partida (`0x40B5C1`: estágio 0 → GAMEOVER).
+- `-bt` liga o bit `0x40` em `[0x484F7C]`. Arcade: `-BT/-BTM/-BTV/-BTH` = bits `0x2000/0x4000/0x8000/0x10000`; só o HYBRID (`0x10000`) tem código próprio (sem itens e sem DrawItemBox).
+- Painel da Select no canal 4 (arcade `0x8066FE8`): máscara fixa `0x1E000`, ícones SELECT2 60..63 (`B_item/B_mine/B_hyper/B_hyb`) no quadro 1920, sem número de nível.
+- Regras em Lua 5.0.2 (`SCRIPT\BATTLEMODE.LUA` + `BATTLEGAUGE.LUA`, bytecode; o original está em `game\game\SCRIPT`, o de `game\SCRIPT` é decompilado/modificado). Uma `lua_State` por jogador (`0x40B6A0`). Implementado em `src/battle_lua.c` + `third_party/lua-5.0.2`.
+- 5 corações: `AccumMiss` (MISS +1, BAD +0.5) chega a 15 → perde 1. Desenho `0x4013F0` com cenas `nP_k_life_normal/_demage/_end` do BT_GUI; no início `0x401099` leva `_demage/_end` ao último quadro (`0x41F260`, 1).
+- BGAs: `[0x484FC8..D4]` = BT_GUI, BT_ITEM, BT_C1, BT_C2 = `GetBattleBGAInstance(0..3)`. Ordem do Run: OnTick (personagens) antes das setas; corações e DrawItemBox depois.
+- Sem MOV da música (`0x4046F8`) → fundo starfield (`testbga.c`). Sem indicador de estágio (`0x402719`).
+- Notas de item = valores `0x14..0x1F` do STX; nunca dão MISS (`0x409BAE`); pisadas na janela chamam `SetJudge(tipo - 0xB)` (`0x40965B`). `0x1F` aleatória usa `[+0x4AAE0]` (`(r+1)%10+1`, 5→6). `0x19` = mina (seta escurecida 0.5). Sprites `skin_*.spr` do 00.DAT.
+- `PM_SET_PLAY_LEVEL`: nível = ramo das páginas seguintes (páginas do battle têm 3 ramos sem condição). `PM_RESET_TO_DEFAULT`: velocidade padrão, limpa earthworm.
+- `ItemProc 0x40C2B0`: Velocity 2x/4x/8x/earthworm; Mine Layer `0x40C7D0` converte itens dos próximos `nível+1` blocos em mina. `EFFECT(n)` 18..36 = `WAVE\B01..B19.WAV`.
+- Nota: WIN/LOSE por corações, empate por score (P1 leva empate) — `0x40AB5A`/`0x40AF1A`.
+
+- Contadores do jogador, −1 por quadro (`0x40575A..0x405835`): `[+0x220]` flash branco da mina (50 quadros, alpha t·0.02, metade 320x480); `[+0x224]` Weather = alpha das setas `(sin(t/4)+1)·0.5` (`0x407B51`); `[+0x228]` curva `(0.005 − 1/(2.4d+200))·120000`; `[+0x22C]` curva `d³·0.000625` (`0x4078C6`, d = distância em x1, y = 378 − vel/1000·f(d) em `0x406010`).
+- Fim do SetJudge (`0x40C051`): judge 9 → B01/B02 ao acaso; 14 (mina) → B09 + flash. GAMEOVER (`0x412AF0`) toca `WAVE\GAMEOVER.WAV`.
+
+- `SetBattleEffectFont(n)` só existe no arcade (`piu` `0x806DB70`): `[PLAY+0x44778] = n` e reinicia a cena n do BT_GUI (tabela `0x80874A0`: fantastic!!, yeah!!, ooops!!, yahpp, ouch, marvelous!!, argggg!!, kaboom!!!). Desenho em `0x80594DD` (battle sem HYBRID): DrawScene até acabar, depois −1. Sem ela o script parava na linha 659 e a animação do item usado ficava em loop (artefatos). **Referência do battle passa a ser o `piu`, não o PIU32.**
+
+- **BGA3 (motor do arcade, `piu`)**, confirmado em jogo por print:
+  - keyframe `+4` > 3 = máscara de stencil para as próximas `+4 − 2` camadas (`0x804D1DF`, `0x807787A`, `0x80778DE`, `0x807791E`). A barra de nível usa isso (`gua_ma`). O contexto GL precisa de stencil.
+  - Escala literal no BGA3: 0 não desenha. A troca 0 → 1 é só do BGA1/2.
+  - `+4` = 2/3: caminho Bézier com os controles em `+0x50..+0x5C` e os segmentos em `+0x60` (`0x806255E`). O tipo 3 soma o ângulo do caminho à rotação (`0x80624B6`, `0x8062728`).
+  - `+0x3C` = easing de x/y (`0x804DBAE`).
+- **ItemProc do arcade** (`0x806CBE8`): Accel 300/600/900, ou 960 na curva cúbica; Weather 120/480/720/900. O Mine Layer mina todos os ramos dos blocos seguintes.
+- **EffectFont** é desenhado logo depois do OnTick, antes das setas (`0x80594DD`).
+- **Medidor de item** (`BATTLEGAUGE.LUA`): só sobe com item no slot 1 da caixa.
+- **Ajuda de teste do port:** `PUMPY_BT_AUTOITEM=1` faz o autoplay pisar nas notas de item.
+
+- **Modos do battle** (`0x8058E2D`, troca `0x806BD7C(this, de, para)` em todo o chart na carga): -BTM `0x4000` 15/16/17/1B/1E→1A, 1C→18; -BTV `0x8000` 15/16/18/1A→1E, 19/1B/1C→17; -BTH `0x10000` 14..1F→1 (seta comum); sempre 16→1 depois. `btModeRemap` em `gameplay.c`.
+
+### Em aberto
+- Bits de opção do jogador `0x4000`/`0x8000` (Decel/Accel da Select) usam as mesmas curvas do Accel (não ligados no port).
+- `[+0x19AD8]` do OnTick tratado como ms da música; ordem exata do OnTick em relação às setas.
+- Mine Layer só altera os itens já extraídos (não as variantes das outras páginas/níveis).

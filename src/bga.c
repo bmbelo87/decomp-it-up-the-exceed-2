@@ -29,9 +29,11 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t, int picVersi
     }
     r.scaleX = lerp(a->scaleX, b->scaleX, t);
     r.scaleY = lerp(a->scaleY, b->scaleY, t);
+    if (picVersion != 3) {   /* BGA3: escala literal (arcade 0x804CC8A..0x804CCCB + glScalef) */
     if (a->scaleY == 0.0f && b->scaleY == 0.0f) r.scaleY = r.scaleX;
     else if (a->scaleY == 0.0f) r.scaleY = b->scaleY;
     else if (b->scaleY == 0.0f) r.scaleY = a->scaleY;
+    }
     r.rotation = lerp(a->rotation, b->rotation, t);
     r.r = lerp(a->r, b->r, t);
     r.g = lerp(a->g, b->g, t);
@@ -41,6 +43,100 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t, int picVersi
     r.type = a->type;
     r.z_order = b->z_order;
     return r;
+}
+
+/* ---- BGA3: easing e caminho Bézier do arcade (piu) ------------------------ */
+
+/* 0x804DBAE(a, b, t, e): e = 0 linear; e > 0 -> v = e/20 + t(1 - e/20), s = v^e;
+ * e < 0 -> u = min(t / (1 - e/20), 1), s = 1 - (1 - u)^(1 - e). a + (b - a)s */
+static float bga3_ease(float a, float b, float t, int e)
+{
+    if (e == 0) return a + (b - a) * t;
+    double s;
+    if (e > 0) {
+        double k = e / 20.0, v = k + t * (1.0 - k);
+        s = v;
+        for (int i = e - 1; i > 0; i--) s *= v;
+    } else {
+        double u = t / (1.0 - e / 20.0);
+        if (u >= 1.0) u = 1.0;
+        double w = 1.0 - u, p = w;
+        for (int i = 0; i < -e; i++) p *= w;   /* (1-u)^(1-e) */
+        s = 1.0 - p;
+    }
+    return (float)(a + (b - a) * s);
+}
+
+/* 0x80624B6(x1, y1, x2, y2): atan(dx/dy) em graus, +180 com dy < 0, em [0, 360) */
+static float bga3_angle(float x1, float y1, float x2, float y2)
+{
+    double dy = (double)y2 - y1, dx = (double)x2 - x1;
+    double a = atan(dx / dy) * 57.29577951471995;
+    if (dy < 0.0) a += 180.0;
+    if (a != a) a = 0.0;   /* 0/0 */
+    if (a < 0.0) a += 360.0;
+    if (a >= 360.0) a -= (double)(((int)a / 360) * 360);
+    return (float)a;
+}
+
+static double bga3_norm360(double a)
+{
+    int i = (int)(a + 360.0);
+    return a + 360.0 - (double)((i / 360) * 360);
+}
+
+/* 0x8062728(x, y, w): interpolação de ângulo pelo caminho curto */
+static float bga3_lerpAngle(float x, float y, float w)
+{
+    double X = bga3_norm360(x), Y = bga3_norm360(y);
+    if (fabs(Y - X) > 180.0) {
+        X = bga3_norm360(X + 180.0);
+        Y = bga3_norm360(Y + 180.0);
+        return (float)(X + (Y - X) * w - 180.0);
+    }
+    return (float)(X + (Y - X) * w);
+}
+
+/* 0x804CCD1..0x804CE54: tipos 2/3 — Bézier cúbica A, A+c1, B+c2, B amostrada
+ * em segs+1 pontos (0x806255E); posição = reta entre as amostras idx e idx+1.
+ * Tipo 3 soma à rotação o ângulo do caminho (amostras de trás para frente). */
+static void bga3_path(BGAKeyframe* a, BGAKeyframe* b, float t, BGAKeyframe* r)
+{
+    int n = a->segs;
+    if (n < 1) n = 1;
+    if (n > 255) n = 255;
+    float sx[258], sy[258];
+    float p0x = a->x, p0y = a->y;
+    float p1x = a->x + a->c1x, p1y = a->y + a->c1y;
+    float p2x = b->x + a->c2x, p2y = b->y + a->c2y;
+    float p3x = b->x, p3y = b->y;
+    int cnt = n + 1;
+    for (int i = 0; i < cnt; i++) {
+        float u = (cnt > 1) ? (float)i / (float)(cnt - 1) : 0.0f;
+        float m = 1.0f - u;
+        sx[i] = p0x * m * m * m + 3.0f * p1x * u * m * m + 3.0f * p2x * u * u * m + p3x * u * u * u;
+        sy[i] = p0y * m * m * m + 3.0f * p1y * u * m * m + 3.0f * p2y * u * u * m + p3y * u * u * u;
+    }
+    sx[cnt] = sx[cnt - 1]; sy[cnt] = sy[cnt - 1];
+    sx[cnt + 1] = sx[cnt - 1]; sy[cnt + 1] = sy[cnt - 1];
+    float nt = (float)a->segs * t;
+    int idx = (int)nt;
+    if (idx < 0) idx = 0;
+    if (idx > n) idx = n;
+    float f = nt - (float)idx;
+    r->x = sx[idx] + (sx[idx + 1] - sx[idx]) * f;
+    r->y = sy[idx] + (sy[idx + 1] - sy[idx]) * f;
+    if (a->interp == 3) {
+        float ang;
+        if (idx >= a->segs - 1)
+            ang = bga3_angle(sx[idx + 1], sy[idx + 1], sx[idx], sy[idx]);
+        else {
+            float a1 = bga3_angle(sx[idx + 1], sy[idx + 1], sx[idx], sy[idx]);
+            float a2 = bga3_angle(sx[idx + 2], sy[idx + 2], sx[idx + 1], sy[idx + 1]);
+            ang = bga3_lerpAngle(a2, a1, 1.0f - f);
+        }
+        r->rotation += ang;
+    }
 }
 
 static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outAnimT, int picVersion) {
@@ -74,6 +170,15 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outA
     /* blendMode vem do keyframe A (inicio do segmento atual) — igual ao original:
        BGA_RenderLayer usa *(short*)(pfVar1 - 4) onde pfVar1 aponta para B, logo A+0x30 */
     result.blendMode = layer->keyframes[segIdx].blendMode;
+    result.interp = a->interp;   /* arcade: [esi+4] = keyframe do início do trecho */
+    if (picVersion == 3) {
+        if (a->interp == 2 || a->interp == 3)
+            bga3_path(a, b, t, &result);
+        else if (a->ease != 0) {
+            result.x = bga3_ease(a->x, b->x, t, a->ease);
+            result.y = bga3_ease(a->y, b->y, t, a->ease);
+        }
+    }
 
     if (a->type == 0) result.a = 0;
     else if (b->type == 0 && t >= 1.0f) result.a = 0;
@@ -177,6 +282,7 @@ static bool parseBGA2(const uint8_t* bgaData, uint32_t bgaSize, BGAPicture* pic)
 static bool parseBGA0(const uint8_t* bgaData, uint32_t bgaSize);
 
 bool BGA_Load(const char* path) {
+    if (g_game.bgaPicCount >= MAX_BGA_PICS) { Log_Print("BGA: limite MAX_BGA_PICS (%d)\n", MAX_BGA_PICS); return false; }
     FILE* f = fopen(path, "rb");
     if (!f) return false;
 
@@ -208,6 +314,7 @@ bool BGA_Load(const char* path) {
 }
 
 bool BGA_LoadFromMemory(const uint8_t* data, uint32_t size, bool isBGA2) {
+    if (g_game.bgaPicCount >= MAX_BGA_PICS) { Log_Print("BGA: limite MAX_BGA_PICS (%d)\n", MAX_BGA_PICS); return false; }
     if (!data || size < 4) return false;
     if (!isBGA2) return false;
 
@@ -516,6 +623,10 @@ static float s_slotRGB[3] = { 1.0f, 1.0f, 1.0f }, s_slotA = 1.0f;
 
 static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, float animT) {
     if (!state || state->type == 0 || state->a <= 0.01f) return;
+    /* BGA3: o arcade passa a escala direto ao glScalef — 0 não desenha nada.
+     * (A troca 0 -> 1 abaixo é do BGA1/2; no BGA3 ela fazia a máscara gua_ma
+     * da barra de nível aparecer inteira com escala 0.) */
+    if (picVersion == 3 && (state->scaleX == 0.0f || state->scaleY == 0.0f)) return;
 
     /* Exceed2 BGA3 (PIU32.EXE 0x41e963 + ramo [obj]==3 em 0x41ea4b): o pivô de
      * rotação/escala é (x, y) e a imagem fica em x - hot - w/2 (hot += w*0.5).
@@ -664,6 +775,8 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
     }
 }
 
+static int s_maskCount;   /* [bga+0x1A4] do arcade: slots restantes com máscara */
+
 void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
@@ -694,8 +807,29 @@ void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
 
     if (!state) return;
 
-    if (state->type == 0 || state->a <= 0.01f) return;
-    renderOneLayer(layer, state, pic->version, animT);
+    if (state->type == 0) return;
+    /* arcade 0x804D1DF..0x804D24E: +4 > 3 -> a camada só escreve no stencil
+     * (0x807787A: limpa o stencil, ALWAYS 1, REPLACE, alpha > 0.5, sem cor);
+     * +4 > 2 -> depois dela, EQUAL 1 / KEEP e as próximas +4 - 2 camadas
+     * saem recortadas ([bga+0x1A4] = +4 - 1, decrementado por slot). */
+    if (pic->version == 3 && state->interp > 3) {
+        glClear(GL_STENCIL_BUFFER_BIT);
+        glEnable(GL_STENCIL_TEST);
+        glStencilFunc(GL_ALWAYS, 1, 1);
+        glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_GREATER, 0.5f);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    }
+    if (state->a > 0.01f)
+        renderOneLayer(layer, state, pic->version, animT);
+    if (pic->version == 3 && state->interp > 2) {
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDisable(GL_ALPHA_TEST);
+        glStencilFunc(GL_EQUAL, 1, 1);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        s_maskCount = state->interp - 1;
+    }
 
     /* Reset estado GL apos cada layer — igual ao original: FUN_00401450(0) apenas
        reseta a blend FUNC para modo normal, mantendo GL_BLEND habilitado (o jogo
@@ -775,8 +909,14 @@ static BGAScene* bga_findScene(int bgaIndex, const char* name) {
 void BGA_DrawFrame(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     if (frame < 0) frame = 0;
-    for (int slot = 0; slot < 100 && slot < MAX_BGA_LAYERS; slot++)
+    s_maskCount = 0;   /* arcade 0x804D296: [bga+0x1A4] = 0 */
+    for (int slot = 0; slot < 100 && slot < MAX_BGA_LAYERS; slot++) {
         BGA_DrawSlot(bgaIndex, frame, slot);
+        /* 0x804D2BB..0x804D2D3: fim da máscara depois de N slots */
+        if (s_maskCount > 0 && --s_maskCount == 0)
+            glDisable(GL_STENCIL_TEST);
+    }
+    if (s_maskCount > 0) { s_maskCount = 0; glDisable(GL_STENCIL_TEST); }   /* port: não vaza para fora do BGA */
 }
 
 /* 0x41f0f0(nome, desenha): desenha no quadro atual e avança.
@@ -810,6 +950,26 @@ bool BGA_SceneDone(int bgaIndex, const char* name) {
     BGAScene* sc = bga_findScene(bgaIndex, name);
     if (!sc || sc->rev) return true;
     return sc->cur >= sc->end - 1;
+}
+
+/* 0x41f260(nome, onde): 0 -> início, 1 -> último quadro (fim - 1); zera o reverso */
+void BGA_SceneSet(int bgaIndex, const char* name, int where) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    if (!sc) return;
+    if (where == 0)      sc->cur = sc->start;
+    else if (where == 1) sc->cur = sc->end - 1;
+    else return;
+    sc->rev = 0;
+}
+
+/* 0x41f350: todas as cenas no início */
+void BGA_SceneResetAll(int bgaIndex) {
+    if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
+    BGAPicture* pic = &g_game.bgaPics[bgaIndex];
+    for (int i = 0; i < pic->sceneCount; i++) {
+        pic->scenes[i].cur = pic->scenes[i].start;
+        pic->scenes[i].rev = 0;
+    }
 }
 
 /* 0x41f390: volta ao início */

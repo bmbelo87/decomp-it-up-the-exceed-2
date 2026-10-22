@@ -1,6 +1,7 @@
 #include "pumpy.h"
 #include "vsl.h"
 #include "bga.h"
+#include "testbga.h"
 
 #ifndef GL_BGR_EXT
 #define GL_BGR_EXT 0x80E0  /* dump de debug; alguns gl.h (Linux) so definem GL_BGR */
@@ -187,6 +188,18 @@ static int lifeLevel(void)
 
 static void applyLife(int player, JudgeType jt)
 {
+    /* PIU32 0x40A1A0: SetJudge (0x40BFD0) e SetJudgeGauge (0x401370) no
+     * script do jogador, uma vez por julgamento. Todos os caminhos de
+     * julgamento do projeto passam por aqui. Só no BATTLE STATION por ora. */
+    if (BLua_IsActive() && jt >= JT_PERFECT && jt <= JT_MISS) {
+        int before = BLua_GetLifeGaugeMeter(player);
+        BLua_SetJudge(player, (int)jt);
+        BLua_SetJudgeGauge(player, (int)jt);
+        int after = BLua_GetLifeGaugeMeter(player);
+        if (after != before)
+            Log_Print("BLUA: P%d corações %d -> %d (status %d)\n", player + 1, before, after,
+                      BLua_GetLifeGaugeStatus(player));
+    }
     int  lvl   = lifeLevel();
     int* life  = &g_game.stats.life[player];
     int* speed = &g_game.stats.lifeSpeed[player];
@@ -940,6 +953,293 @@ static void clearDNPanel(StepRow* row, int pan)
 }
 
 // Processa o julgamento final de uma linha
+/* ─── BATTLE STATION (PIU32, bit 0x40 em [0x484F7C]) ─────────────────────────
+ * Notas de item do STX (tipos 0x14..0x1F). No original elas não precisam ser
+ * pisadas: a linha conta como completa com elas (0x409BAE..0x409C69), então
+ * nunca dão MISS. Como as W/G do Division, saem do chart na carga e ficam em
+ * g_btItem[jog][linha*5 + coluna]. No HYBRID (arcade, -BTH) não há itens. */
+static uint8_t* g_btItem[2];
+int g_btFinalHearts[2];              /* corações no fim da música (nota do battle) */
+static int g_btRand;                 /* [+0x4AAE0]: item da nota aleatória (0x1F) */
+static int g_btSpeedDef[2];          /* [+0x258]: velocidade padrão do jogador */
+/* Contadores de quadro do jogador (decrementados em 0x40575A..0x405835):
+ * [+0x220] flash branco da mina, [+0x224] Weather (setas piscando),
+ * [+0x228] Acceleration curva rápida->lenta, [+0x22C] curva cúbica */
+static int g_btFlash[2], g_btWeather[2], g_btDecel[2], g_btAccel[2];
+
+/* 0x4078C6..0x407937: distância d da linha ao receptor (velocidade x1) ->
+ * y = 378 - velocidade/1000 * f(d) (0x406010). Com [+0x22C]: f = d^3*0.000625;
+ * com [+0x228]: f = (0.005 - 1/(2.4d + 200)) * 120000; senão f = d.
+ * (Os bits de opção 0x4000/0x8000 do original usam as mesmas curvas e não
+ * estão ligados aqui.) y0 = receptor; spd = multiplicador de velocidade (d = pixels em x1). */
+static float btWarpY(int p, float y, float y0, float spd)
+{
+    if (p < 0 || p > 1 || spd <= 0.0f || (!g_btAccel[p] && !g_btDecel[p])) return y;
+    double d = (y - y0) / spd, f;
+    if (g_btAccel[p]) f = pow(d, 3.0) * 0.000625;
+    else {
+        double den = d * 2.4 + 200.0;
+        if (den == 0.0) return y;
+        f = (0.005 - 1.0 / den) * 120000.0;
+    }
+    return (float)(y0 + f * spd);
+}
+
+/* 0x407B51: Weather — glColor4f(1,1,1, (sin(t/4) + 1) * 0.5) antes de cada linha */
+static float btWeatherA(int p)
+{
+    if (p < 0 || p > 1 || !g_btWeather[p]) return 1.0f;
+    int t = g_btWeather[p] / 4;   /* cdq/and 3/sar 2: divisão truncada */
+    return (float)((sin((double)t) + 1.0) * 0.5);
+}
+static bool g_btEarthDef[2];
+
+static bool btItemType(uint8_t v) { return v >= 0x14 && v <= 0x1F; }
+
+/* Tira as notas de item da metade do jogador nas linhas [r0, r1). */
+static int btPageOf(int row);
+/* Mine Layer (arcade 0x806D0B6) altera todos os ramos dos blocos seguintes
+ * na cópia do chart do jogador; aqui os ramos são compartilhados, então o
+ * bloco minado fica marcado e a conversão é refeita a cada extração. */
+static bool g_btMinedPage[2][256];
+static bool btMineable(uint8_t v) { return (v >= 0x15 && v <= 0x18) || (v >= 0x1A && v <= 0x1F); }
+
+/* Arcade 0x8058E2D..0x8058F76: na carga do step o modo do battle troca os
+ * valores das notas de item em todo o chart (0x806BD7C(this, de, para)).
+ * -BTM (0x4000): 15/16/17/1B/1E -> 1A, 1C -> 18. -BTV (0x8000): 15/16/18/1A -> 1E,
+ * 19/1B/1C -> 17. -BTH (0x10000): 14..1F -> 1 (seta comum). Depois, em todos
+ * os modos, 16 -> 1 (o item 0x16 nunca aparece no arcade). Testado nesta ordem. */
+static uint8_t btModeRemap(uint8_t v)
+{
+    if (g_exBattleModeBit & 0x4000) {
+        if (v == 0x16 || v == 0x15 || v == 0x17 || v == 0x1B || v == 0x1E) v = 0x1A;
+        else if (v == 0x1C) v = 0x18;
+    } else if (g_exBattleModeBit & 0x8000) {
+        if (v == 0x15 || v == 0x16 || v == 0x18 || v == 0x1A) v = 0x1E;
+        else if (v == 0x19 || v == 0x1B || v == 0x1C) v = 0x17;
+    } else if (g_exBattleModeBit & 0x10000) {
+        if (v >= 0x14 && v <= 0x1F) v = 1;
+    }
+    if (v == 0x16) v = 1;
+    return v;
+}
+
+static void btExtractItems(int p, uint32_t r0, uint32_t r1)
+{
+    if (!g_chart) return;
+    if (!g_btItem[p]) {   /* HYBRID: sem extração, só a troca para seta comum */
+        if (!(g_exBattleModeBit & 0x10000)) return;
+        for (uint32_t r = r0; r < r1 && r < g_chart->rowCount; r++) {
+            uint8_t* h = (uint8_t*)((p == 0) ? &g_chart->rows[r].half1 : &g_chart->rows[r].half2);
+            for (int i = 0; i < 5; i++) h[i] = btModeRemap(h[i]);
+        }
+        return;
+    }
+    for (uint32_t r = r0; r < r1 && r < g_chart->rowCount; r++) {
+        uint8_t* h = (uint8_t*)((p == 0) ? &g_chart->rows[r].half1 : &g_chart->rows[r].half2);
+        for (int i = 0; i < 5; i++) h[i] = btModeRemap(h[i]);
+        int pg = btPageOf((int)r);
+        bool mined = (pg >= 0 && pg < 256 && g_btMinedPage[p][pg]);
+        for (int i = 0; i < 5; i++) {
+            uint8_t v = btItemType(h[i]) ? h[i] : 0;
+            if (mined && btMineable(v)) v = 0x19;
+            g_btItem[p][r * 5 + i] = v;
+            if (btItemType(h[i])) h[i] = 0;
+        }
+    }
+}
+
+/* 0x40C730: caixa vazia (os 4 slots = 1) */
+static bool btBoxEmpty(int p)
+{
+    for (int k = 1; k <= 4; k++) if (BLua_GetItemSlot(p, k) != 1) return false;
+    return true;
+}
+/* 0x40C6E0: caixa cheia (nenhum slot = 1) */
+static bool btBoxFull(int p)
+{
+    for (int k = 1; k <= 4; k++) if (BLua_GetItemSlot(p, k) == 1) return false;
+    return true;
+}
+/* 0x40C680(n): o item n+1 já está na caixa */
+static bool btBoxHas(int p, int n)
+{
+    for (int k = 1; k <= 4; k++) if (BLua_GetItemSlot(p, k) == n + 1) return true;
+    return false;
+}
+
+/* Página (bloco) que contém a linha */
+static int btPageOf(int row)
+{
+    if (!g_chart) return -1;
+    for (int i = 0; i < g_chart->divPageCount; i++) {
+        uint32_t s = g_chart->divPages[i].rowStart, n = g_chart->divPages[i].rowCount;
+        if ((uint32_t)row >= s && (uint32_t)row < s + n) return i;
+    }
+    return -1;
+}
+
+/* 0x40C120, PM_SET_PLAY_LEVEL: o nível vai para [+0x5C + i*4] de todos os
+ * blocos depois do atual ([+0x128]); o bloco toca a variante desse nível
+ * (0x4077A6). No STX do battle cada página tem 3 ramos sem condição:
+ * ramo = nível (0 EASY, 1 NORMAL, 2 HARD). Aqui a variante entra só na
+ * metade do jogador. A velocidade por ramo do Division não é aplicada
+ * (o segmento é compartilhado pelos dois jogadores). */
+void Gameplay_BattleSetLevel(int p, int level)
+{
+    if (!g_chart || g_chart->divPageCount <= 0 || p < 0 || p > 1) return;
+    int cur = btPageOf(getRowAtTime(g_songTime));
+    int n = 0;
+    for (int pg = cur + 1; pg < g_chart->divPageCount; pg++) {
+        if (level < 0 || level >= g_chart->divPages[pg].branchCount) continue;
+        const StepRow* src = g_chart->divPages[pg].branchRows[level];
+        if (!src) continue;
+        uint32_t s = g_chart->divPages[pg].rowStart, cnt = g_chart->divPages[pg].rowCount;
+        if (s + cnt > g_chart->rowCount) continue;
+        for (uint32_t r = 0; r < cnt; r++) {
+            if (p == 0) g_chart->rows[s + r].half1 = src[r].half1;
+            else        g_chart->rows[s + r].half2 = src[r].half1;
+        }
+        btExtractItems(p, s, s + cnt);
+        n++;
+    }
+    Log_Print("BTL: P%d nível %d nas %d páginas depois da %d\n", p + 1, level, n, cur);
+}
+
+/* 0x40C120, PM_RESET_TO_DEFAULT: [+0x148] = [+0x258]; limpa 0x1000 (earthworm) */
+void Gameplay_BattleResetSpeed(int p)
+{
+    if (p < 0 || p > 1) return;
+    g_game.cmdSpeedMult[p] = g_btSpeedDef[p];
+    g_game.cmdEarthworm[p] = false;
+}
+
+/* 0x40C2B0: efeito do item no jogador atacado. Sons = buffers 0xCA0E30..0xCA0E70
+ * (EFFECT 20..36 = B03..B19). [+0x148] = velocidade x1000. */
+void Gameplay_BattleItemProc(int p, int item, int level)
+{
+    if (p < 0 || p > 1) return;
+    switch (item) {
+    case 2:   /* Shield: B19 ou B03 ao acaso */
+        BLua_PlayEffect((rand() & 1) ? 20 : 36);
+        break;
+    case 3:   /* Change */
+        BLua_PlayEffect(22);
+        break;
+    case 4:   /* Acceleration */
+        BLua_PlayEffect(23);
+        /* arcade 0x806CC5E (o PIU32 0x40C2B0 usa outros valores): nível 0/1/2 ->
+         * [+0x148]=1000 e [+0x250] = 300/600/900; outro -> [+0x250]=0,
+         * [+0x254]=960. Curvas em btWarpY. */
+        if (level >= 0 && level <= 2) { g_game.cmdSpeedMult[p] = 1; g_btDecel[p] = 300 * (level + 1); }
+        else { g_btDecel[p] = 0; g_btAccel[p] = 960; }
+        break;
+    case 5:   /* Weather: setas piscando */
+        BLua_PlayEffect(24);
+        /* arcade 0x806CCE1: [+0x24C] = 120/480/720, outro 900 (PIU32: (n*3+3)*160) */
+        g_btWeather[p] = (level == 0) ? 120 : (level == 1) ? 480 : (level == 2) ? 720 : 900;
+        break;
+    case 7: { /* Mine Layer, 0x40C7D0(nível+1): nos blocos seguintes, as notas
+               * de pegar item (0x15..0x18, 0x1A..0x1F, tabela 0x40C7B8) viram mina */
+        BLua_PlayEffect(25);
+        if (!g_btItem[p] || !g_chart) break;
+        int cur = btPageOf(getRowAtTime(g_songTime));
+        for (int pg = cur + 1; pg <= cur + level + 1 && pg < g_chart->divPageCount; pg++) {
+            if (pg < 256) g_btMinedPage[p][pg] = true;
+            uint32_t s = g_chart->divPages[pg].rowStart, cnt = g_chart->divPages[pg].rowCount;
+            for (uint32_t r = s; r < s + cnt && r < g_chart->rowCount; r++)
+                for (int i = 0; i < 5; i++) {
+                    uint8_t v = g_btItem[p][r * 5 + i];
+                    if (btMineable(v))
+                        g_btItem[p][r * 5 + i] = 0x19;
+                }
+        }
+        break;
+    }
+    case 8:   /* Gauge break */
+        BLua_PlayEffect(28);
+        break;
+    case 0xB: /* Velocity */
+        if      (level == 0) g_game.cmdSpeedMult[p] = 2;
+        else if (level == 1) g_game.cmdSpeedMult[p] = 4;
+        else if (level == 2) g_game.cmdSpeedMult[p] = 8;
+        else if (level == 3) g_game.cmdEarthworm[p] = true;
+        break;
+    default:
+        break;
+    }
+    Log_Print("BTL: ItemProc P%d item %d nível %d\n", p + 1, item, level);
+}
+
+/* 0x40965B..0x409780: pisada numa nota de item dentro da janela (PERFECT..BAD).
+ * Disparo com a caixa vazia ou item repetido: a nota some sem efeito (0x81).
+ * Senão 0x40A1A0(jog, tipo - 0xB) -> SetJudge/SetJudgeGauge com JUDGE_USER + n;
+ * a nota aleatória usa [+0x4AAE0] + 9. Sem PERFECT/combo. */
+static bool btPressItem(int p, int panel)
+{
+    if (!g_btItem[p] || panel < 0 || panel >= 5) return false;
+    int hit = -1;
+    for (int ri = 0; ri < (int)g_chart->rowCount; ri++) {
+        if (!g_btItem[p][ri * 5 + panel]) continue;
+        double sd = g_songTime - getRowTime(ri);
+        if (sd < -judgeBadEarly()) break;
+        if (sd > judgeBadLate()) continue;
+        hit = ri; break;
+    }
+    if (hit < 0) return false;
+    uint8_t t = g_btItem[p][hit * 5 + panel];
+    g_btItem[p][hit * 5 + panel] = 0;
+    if (t == 0x14 && btBoxEmpty(p)) return true;
+    if (t > 0x14 && btBoxHas(p, t - 0x14)) return true;
+    int j = (t == 0x1F) ? g_btRand + 9 : t - 0xB;
+    g_noteState[p][panel] = 1;
+    g_noteExplodeRow[p][panel] = hit;
+    g_noteExplodeFrame[p][panel] = 0;
+    g_glowTimer[p][panel] = 24;   /* pegar item acende o spark/glow igual a uma seta pisada */
+    BLua_SetJudge(p, j);
+    /* 0x40C051..0x40C11A (fim do SetJudge): 9 = B02 ou B01 ao acaso;
+     * 14 (mina) = B09 e flash branco de 50 quadros ([+0x220] = 0x32) */
+    if (j == 9) BLua_PlayEffect((rand() & 1) ? 18 : 19);
+    else if (j == 14) { BLua_PlayEffect(26); g_btFlash[p] = 50; }
+    BLua_SetJudgeGauge(p, j);
+    Log_Print("BTL: P%d nota de item 0x%02X -> judge %d\n", p + 1, t, j);
+    return true;
+}
+
+/* Desenho de uma nota de item (DrawStep 0x4069A7..0x406CC9). cx = centro da
+ * seta normal do painel; normalTile/normalW/normalH = tile da seta normal
+ * (com a skin, se houver) para os casos em que o original desenha a seta
+ * comum (caixa vazia/cheia ou item repetido). */
+static void btDrawItemNote(int p, uint8_t t, float cx, float y, int normalTile, float alpha)
+{
+    int k = t - 0x14;
+    bool asNormal = false;
+    float gray = 1.0f;
+    if (t == 0x14)                 asNormal = btBoxEmpty(p);                     /* 0x4069DD */
+    else if (t == 0x19)            { asNormal = true; gray = 0.5f; }              /* 0x406B3E: cor 0.5 */
+    else if (t == 0x1F)            asNormal = btBoxFull(p) || btBoxHas(p, 0xB);  /* 0x406C60 */
+    else                           asNormal = btBoxFull(p) || btBoxHas(p, k);    /* 0x406A35 / 0x406BBC */
+    if (asNormal) {
+        if (normalTile < 0 || normalTile >= g_game.sprTileCount) return;
+        SPRTileDef* nt = &g_game.sprTiles[normalTile];
+        int tw = Texture_GetWidth(nt->texId);  if (tw <= 0) tw = 256;
+        int th = Texture_GetHeight(nt->texId); if (th <= 0) th = 256;
+        float w = (float)nt->srcW, h = (float)nt->srcH;
+        Texture_DrawUV(nt->texId, cx - w / 2, y - h / 2, w, h,
+                       nt->u1 * tw, nt->v1 * th, nt->u2 * tw, nt->v2 * th, gray, gray, gray, alpha);
+        return;
+    }
+    if (t == 0x1F) {   /* 0x406C9E: o item da aleatória gira a cada desenho, pulando o 5 */
+        g_btRand = (g_btRand + 1) % 10 + 1;
+        if (g_btRand == 5) g_btRand = 6;
+    }
+    int base = g_fontSkinItem[k];
+    if (base < 0) return;
+    int idx = base + (g_fontSkinItemN[k] > 0 ? arrowAnimFrame() % g_fontSkinItemN[k] : 0);
+    float w = (float)g_game.sprTiles[idx].srcW, h = (float)g_game.sprTiles[idx].srcH;
+    Sprite_DrawTileUV(idx, cx + 2.0f, y, w, h, alpha);   /* Translate(2, 0, 0) em 0x406A5F */
+}
+
 static void processRowJudgment(int player, int row, JudgeType jt) {
     int receptorY = 38;
     bool hdCheck = isHDMode();
@@ -1214,6 +1514,9 @@ static void processInput(int player)
         if (!Input_IsPadHit(usePlayer, btn)) continue;
         g_hitTimer[player][panel] = 17;
         g_p1FlashTimer[player][panel] = 15; // inicia zoom+fade do tile p1
+
+        /* BATTLE: nota de item pisada na janela consome o aperto (0x40965B) */
+        if (!isHD && !isDN && btPressItem(player, panel)) continue;
 
         /* Division: W/G pisadas na janela (PERFECT..BAD) explodem, somam no
          * contador e escolhem o ramo — sem judge, combo ou MISS (0x40f16a). */
@@ -1500,6 +1803,19 @@ static void processAutoplay(void)
 
     int _ap0 = (isHD || dnAP) ? 0 : ((g_game.activePlayerMask == 0x2) ? 1 : 0);
     int _ap1 = (isHD || dnAP) ? 1 : ((g_game.activePlayerMask == 0x3) ? 2 : _ap0 + 1);
+    /* Ajuda de teste do port (não existe no original): com a variável de
+     * ambiente PUMPY_BT_AUTOITEM, o autoplay também pisa nas notas de item. */
+    static int btAutoItem = -1;
+    if (btAutoItem < 0) btAutoItem = getenv("PUMPY_BT_AUTOITEM") ? 1 : 0;
+    if (btAutoItem)
+        for (int p = 0; p < 2; p++)
+            for (int panel = 0; panel < 5 && g_btItem[p]; panel++) {
+                if (!g_autoPanel[panel]) continue;
+                int ri = getRowAtTime(g_songTime);
+                for (int r = ri - 2; r <= ri + 2; r++)
+                    if (r >= 0 && r < (int)g_chart->rowCount && g_btItem[p][r * 5 + panel] &&
+                        fabs(g_songTime - getRowTime(r)) <= JUDGE_PERFECT) { btPressItem(p, panel); break; }
+            }
     for (int p = _ap0; p < _ap1; p++)
     {
         int hitRows[10], hitCount = 0;
@@ -1862,6 +2178,37 @@ void Gameplay_Start(int songId)
      * easy=500, normal=300, hard=100. Antes era fixo em 500, o perfil do easy. */
     g_game.stats.lifeSpeed[0] = k_lifeSpeedInit[lifeLevel()];
     g_game.stats.lifeSpeed[1] = k_lifeSpeedInit[lifeLevel()];
+    /* PIU32 0x40B6A0 + 0x401210/0x401020: script do modo por jogador e
+     * ResetData(nível). O nível vem da EEPROM +0x7ED; aqui usa o nível da
+     * lifebar do projeto (hipótese: mesma opção). Só o BATTLE STATION
+     * ([0x484FB4] == 2) usa o Lua por enquanto. */
+    BLua_Close();
+    for (int k = 0; k < 4; k++) g_btBga[k] = -1;
+    if (g_exStation == 2) {
+        /* PIU32 0x405C1D..0x405C52: BT_GUI, BT_ITEM, BT_C1, BT_C2 */
+        static const char* const k_btDat[4] = { "BT_GUI", "BT_ITEM", "BT_C1", "BT_C2" };
+        for (int k = 0; k < 4; k++)
+            if (Resource_LoadBGAByName(k_btDat[k])) g_btBga[k] = g_game.bgaPicCount - 1;
+        Log_Print("GP: BGAs do battle %d %d %d %d\n", g_btBga[0], g_btBga[1], g_btBga[2], g_btBga[3]);
+    }
+    if (g_exStation == 2) InitS();   /* fundo do battle: starfield (testbga.c) */
+    if (g_exStation == 2 && BLua_Init(1)) {
+        for (int p = 0; p < 2; p++)
+            if (g_game.activePlayerMask & (1 << p)) BLua_ResetData(p, lifeLevel());
+        /* 0x401099..0x4011DA (ResetData da lifebar, battle): ResetAllScene no
+         * BT_GUI e no BT_ITEM; depois as cenas _demage e _end dos dois
+         * jogadores vão para o último quadro (0x41F260 com 1), então somem. */
+        BGA_SceneResetAll(g_btBga[0]);
+        BGA_SceneResetAll(g_btBga[1]);
+        for (int pc = 1; pc <= 2; pc++)
+            for (int k = 1; k <= 5; k++) {
+                char nm[32];
+                snprintf(nm, sizeof(nm), "%dP_%d_life_demage", pc, k);
+                BGA_SceneSet(g_btBga[0], nm, 1);
+                snprintf(nm, sizeof(nm), "%dP_%d_life_end", pc, k);
+                BGA_SceneSet(g_btBga[0], nm, 1);
+            }
+    }
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
     memset(g_hitTimer, 0, sizeof(g_hitTimer));
     memset(g_glowTimer, 0, sizeof(g_glowTimer));
@@ -1918,6 +2265,29 @@ void Gameplay_Start(int songId)
         Log_Print("GP: 2P single — duplicated half1 -> half2 (%d rows)\n", g_chart->rowCount);
     }
 
+    /* BATTLE STATION: notas de item fora do chart (ver btExtractItems).
+     * Depois da duplicação 2P, para cada jogador ter as suas. */
+    for (int p = 0; p < 2; p++) { free(g_btItem[p]); g_btItem[p] = NULL; }
+    g_btRand = 0;   /* 0x403DE7 */
+    memset(g_btFlash, 0, sizeof g_btFlash); memset(g_btWeather, 0, sizeof g_btWeather);   /* 0x40BA7F..0x40BA91 */
+    BLua_ResetEffectFont();   /* arcade 0x8058B52 */
+    memset(g_btMinedPage, 0, sizeof g_btMinedPage);
+    memset(g_btDecel, 0, sizeof g_btDecel); memset(g_btAccel, 0, sizeof g_btAccel);
+    if (BLua_IsActive() && g_songLoaded && g_chart && (g_exBattleModeBit & 0x10000)) {
+        for (int p = 0; p < 2; p++) btExtractItems(p, 0, g_chart->rowCount);   /* itens -> seta comum */
+    } else if (BLua_IsActive() && g_songLoaded && g_chart) {
+        int items = 0;
+        for (int p = 0; p < 2; p++) {
+            g_btSpeedDef[p] = g_game.cmdSpeedMult[p];
+            g_btEarthDef[p] = g_game.cmdEarthworm[p];
+            if (!(g_game.activePlayerMask & (1 << p))) continue;
+            g_btItem[p] = (uint8_t*)calloc((size_t)g_chart->rowCount * 5, 1);
+            btExtractItems(p, 0, g_chart->rowCount);
+            for (uint32_t i = 0; g_btItem[p] && i < g_chart->rowCount * 5; i++) if (g_btItem[p][i]) items++;
+        }
+        Log_Print("BTL: %d notas de item no chart\n", items);
+    }
+
     /* Modificadores de chart aplicados no load time (apos duplicacao 2P).
      * Ordem: Mirror primeiro, depois Random Step (RS sobre mirror se ambos ativos). */
     if (g_songLoaded && g_chart) {
@@ -1968,6 +2338,8 @@ void Gameplay_ExScoreSync(void)
 void Gameplay_Exit(void)
 {
     BGM_Stop();
+    BLua_Close();
+    for (int p = 0; p < 2; p++) { free(g_btItem[p]); g_btItem[p] = NULL; }
 
     if (g_songLoaded)
     {
@@ -2000,6 +2372,15 @@ void Gameplay_Update(float dt)
     if (dt > 0.05f) dt = 0.05f;
 
     Gameplay_ExScoreSync();
+
+    /* OnTick (PIU32 0x404BBC) foi para Gameplay_Render: o script desenha
+     * cenas dentro dele. [+0x19AD8] tratado como tempo da música em ms. */
+
+    /* Corações para a nota do battle (0x40AB79: 0x4012D0 guarda o último
+     * GetLifeGaugeMeter em [lifebar+0x10]) */
+    if (BLua_IsActive())
+        for (int p = 0; p < 2; p++)
+            if (g_game.activePlayerMask & (1 << p)) g_btFinalHearts[p] = BLua_GetLifeGaugeMeter(p);
 
     /* Demo: 0x402B82 — crédito ou 35 s -> IDLE */
     if (g_exDemo && (Coin_HasCredit() || g_songTime >= 35.0)) {
@@ -2214,7 +2595,15 @@ void Gameplay_Update(float dt)
         if (stageIdx < 0) stageIdx = 0;
         bool lifeFailActive = (opt != 0) && ((opt - 1) <= stageIdx) && (stageIdx != 0);
 
-        if (lifeFailActive) {
+        /* PIU32 0x405519..0x405568: o teste de vida usa GetLifeGaugeMeter do
+         * script; no battle são os corações dos dois jogadores. A condição de
+         * opção/estágio (0x405502, EEPROM +0x7EE) continua valendo. */
+        if (lifeFailActive && BLua_IsActive() && twoP) {
+            if (BLua_GetLifeGaugeMeter(0) < 1 && BLua_GetLifeGaugeMeter(1) < 1) {
+                Log_Print("GP: stage break battle — os dois sem corações\n");
+                sbTrigger = true;
+            }
+        } else if (lifeFailActive) {
             if (twoP) {
                 if (g_game.stats.life[0] < 1 && g_game.stats.life[1] < 1) {
                     Log_Print("GP: stage break 2P ambas vidas<1 (opt=%d stage=%d)\n", opt, stageIdx);
@@ -2262,6 +2651,11 @@ void Gameplay_Update(float dt)
         if (g_judgeFrame[p] > 0)
             g_judgeFrame[p]--;
         if (g_exJudgeCnt[p] < 1000) g_exJudgeCnt[p]++;   /* 0x407439 */
+        /* 0x40575A..0x405835: contadores do battle, um por quadro */
+        if (g_btFlash[p] > 0)   g_btFlash[p]--;
+        if (g_btWeather[p] > 0) g_btWeather[p]--;
+        if (g_btDecel[p] > 0)   g_btDecel[p]--;
+        if (g_btAccel[p] > 0)   g_btAccel[p]--;
         for (int pan = 0; pan < MAX_PANELS; pan++) {
             if (g_hitTimer[p][pan] > 0)
                 g_hitTimer[p][pan]--;
@@ -2458,6 +2852,53 @@ static void exBattleDraw(float blink)
  * beat = 1.0 no início da batida caindo a 0.0 (índice (1-beat)*59 na
  * tabela 0x4541A0, a mesma do Prex3). Coordenadas do original em Y-UP,
  * que é o espaço do GL do projeto: entram direto. */
+/* PIU32 0x4013F0, ramo battle ([lifebar+0xC] != 0): corações como cenas do
+ * BT_GUI ([lifebar+0x14]). n = GetLifeGaugeMeter (0..5).
+ *   - toca (desenha e avança) todas as cenas _demage e _end do jogador;
+ *   - status 1 (DAMAGED): reinicia "n_life_demage";
+ *   - status 2 (DESTROY): reinicia "(n+1)_life_end" (o coração perdido);
+ *   - status 0: o coração n fica apagado enquanto "n_life_demage" toca;
+ *   - por fim "k_life_normal" com desenho = (k <= n). */
+static void exHeartsDraw(int p)
+{
+    int b = g_btBga[0];
+    if (b < 0) return;
+    const char pc = p ? '2' : '1';
+    char name[32];
+    int n = BLua_GetLifeGaugeMeter(p);
+    bool show[5] = { false, false, false, false, false };
+    for (int k = 0; k < n && k < 5; k++) show[k] = true;
+    for (int k = 1; k <= 5; k++) {
+        snprintf(name, sizeof(name), "%cP_%d_life_demage", pc, k);
+        BGA_ScenePlay(b, name, true);
+    }
+    for (int k = 1; k <= 5; k++) {
+        snprintf(name, sizeof(name), "%cP_%d_life_end", pc, k);
+        BGA_ScenePlay(b, name, true);
+    }
+    int st = BLua_GetLifeGaugeStatus(p);
+    if (st == 1) {
+        if (n >= 1 && n <= 5) {
+            snprintf(name, sizeof(name), "%cP_%d_life_demage", pc, n);
+            BGA_SceneReset(b, name);
+        }
+    } else if (st == 2) {
+        if (n >= 1 && n <= 4) {
+            snprintf(name, sizeof(name), "%cP_%d_life_end", pc, n + 1);
+            BGA_SceneReset(b, name);
+        }
+    } else if (st == 0) {
+        if (n >= 1 && n <= 5) {
+            snprintf(name, sizeof(name), "%cP_%d_life_demage", pc, n);
+            show[n - 1] = BGA_SceneDone(b, name);
+        }
+    }
+    for (int k = 1; k <= 5; k++) {
+        snprintf(name, sizeof(name), "%cP_%d_life_normal", pc, k);
+        BGA_ScenePlay(b, name, show[k - 1]);
+    }
+}
+
 static void exLifebarDraw(int p, float beat, bool dbl)
 {
     static const float k_tbl[60] = {                     /* 0x4541A0 */
@@ -2656,6 +3097,19 @@ void Gameplay_Render(void)
                  ((g_game.activePlayerMask == 0x2) ? 1 : 0);
     int pRend1 = (isHalfDouble || isDoubleOrNightmare) ? 1 :
                  (twoPlayers ? 2 : pRend0 + 1);
+
+    /* PIU32 0x404BBC..0x404BFF: OnTick([+0x19AD8]) de cada jogador ativo,
+     * antes das setas (0x405033..). O script desenha os personagens do
+     * BT_C1/BT_C2 e o win/lose; ficam atrás de tudo. [+0x19AD8] tratado como
+     * tempo da música em ms: hipótese. */
+    if (BLua_IsActive()) {
+        int ms = (int)(g_songTime * 1000.0);
+        for (int p = 0; p < 2; p++)
+            if (g_game.activePlayerMask & (1 << p)) BLua_OnTick(p, ms);
+        /* arcade 0x80594DD: texto do efeito (SetBattleEffectFont) logo depois
+         * do OnTick dos dois jogadores, antes das setas */
+        BLua_DrawEffectFont();
+    }
 
     for (int p = pRend0; p < pRend1; p++)
     {
@@ -2866,6 +3320,9 @@ void Gameplay_Render(void)
         #define XM_DX(yy) (xmS * ((yy) - xmY0))
         #define XM_DXP(pn, yy) (XM_S(pn) * ((yy) - xmY0))
 
+        /* BATTLE: curva do Acceleration (btWarpY) e alpha do Weather */
+        #define BT_Y(yy) btWarpY(p, (yy), (float)(receptorY + rh2 / 2), (g_scrollSpeedX[p] > 0.0f ? g_scrollSpeedX[p] : 1.0f))
+        float btWA = btWeatherA(p);
         bool exHeldHead[MAX_PANELS] = { false };
         float exHeadY[MAX_PANELS] = { 0 };   /* Y da cabeça do hold redesenhada (Exceed) */
         // Pass 0: Hold bodies (esticados entre runs de NT_HOLD_B)
@@ -2888,8 +3345,8 @@ void Gameplay_Render(void)
 
                     float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
                     float vendRi = (endRi < g_visualRowCount && g_visualRow) ? (float)g_visualRow[endRi] : (float)endRi;
-                    float y1 = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow);
-                    float y2 = (float)(receptorY + rh2 / 2 + (vendRi - visualScrollRow) * pPixelsPerRow);
+                    float y1 = BT_Y((float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow));
+                    float y2 = BT_Y((float)(receptorY + rh2 / 2 + (vendRi - visualScrollRow) * pPixelsPerRow));
                     if (y2 < y1) { float t = y1; y1 = y2; y2 = t; }
 
                     /* O clamp abaixo só vale para o body do hold que está sendo
@@ -2920,7 +3377,7 @@ void Gameplay_Render(void)
                         y1 = (float)(receptorY + rh2 / 2);
                         /* era (leitura invertida do m_CurY, cabeça "caminhava" até o receptor):
                         float vh = (activeHold < g_visualRowCount && g_visualRow) ? (float)g_visualRow[activeHold] : (float)activeHold;
-                        float yh = (float)(receptorY + rh2 / 2 + (vh - visualScrollRow) * pPixelsPerRow);
+                        float yh = BT_Y((float)(receptorY + rh2 / 2 + (vh - visualScrollRow) * pPixelsPerRow));
                         y1 = (yh > (float)(receptorY + rh2 / 2)) ? yh : (float)(receptorY + rh2 / 2);
                         */
                     } else if (g_exceedSongIds && ri > 0 &&
@@ -2949,7 +3406,7 @@ void Gameplay_Render(void)
                                        : getPanelValue(&g_chart->rows[headRi], panel, p));
                             if (hv == NT_HOLD_H) {
                                 float vhRi = (headRi < g_visualRowCount && g_visualRow) ? (float)g_visualRow[headRi] : (float)headRi;
-                                float headY = (float)(receptorY + rh2 / 2 + (vhRi - visualScrollRow) * pPixelsPerRow);
+                                float headY = BT_Y((float)(receptorY + rh2 / 2 + (vhRi - visualScrollRow) * pPixelsPerRow));
                                 if (headY < y1) y1 = headY;
                                 else if (headY > y2) y2 = headY;
                             }
@@ -2973,13 +3430,13 @@ void Gameplay_Render(void)
                             offX = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
                         }
                         (void)sprH;
-                        float bodyAlpha = 1.0f;
+                        float bodyAlpha = btWA;
                         if (g_game.cmdVanish[p]) {
                             /* Thresholds derivados do PUMPY.EXE (Ghidra):
                              * _DAT_004349ac=196, _DAT_00434934=256, ref=316
                              * → fade zone 62%-81% da área de play a partir do receptor */
                             float fade = ((y1 + totalH / 2.0f) - 122.0f) / 84.0f;
-                            bodyAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                            bodyAlpha = (fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade)) * btWA;
                         }
                         float cx = posX[panel] + sw / 2.0f + offX;
                         /* Estica apenas a faixa CENTRAL do UV do sprite (25%-75% vertical).
@@ -3035,7 +3492,7 @@ void Gameplay_Render(void)
                 if (tailRi < 0) continue;
                 float vt = (tailRi < g_visualRowCount && g_visualRow) ? (float)g_visualRow[tailRi] : (float)tailRi;
                 float y1 = (float)(receptorY + rh2 / 2);
-                float y2 = (float)(receptorY + rh2 / 2 + (vt - visualScrollRow) * pPixelsPerRow);
+                float y2 = BT_Y((float)(receptorY + rh2 / 2 + (vt - visualScrollRow) * pPixelsPerRow));
                 if (y2 <= y1) continue;
                 int arrowIdx = isDoubleOrNightmare ? (panel % 5) : panel;
                 int idx = g_fontArrowETC + (isHalfDouble ? kHDBodyTile[panel] : kBodyTile[arrowIdx]);
@@ -3055,7 +3512,7 @@ void Gameplay_Render(void)
                 float vC1 = (bt->v1 + (bt->v2 - bt->v1) * 0.25f) * (float)btH;
                 float vC2 = (bt->v1 + (bt->v2 - bt->v1) * 0.75f) * (float)btH;
                 Texture_DrawUV(bt->texId, posX[panel] + offX + XM_DXP(panel, y1), y1, sw, y2 - y1,
-                               bt->u1 * (float)btW, vC1, bt->u2 * (float)btW, vC2, 1.0f, 1.0f, 1.0f, 1.0f);
+                               bt->u1 * (float)btW, vC1, bt->u2 * (float)btW, vC2, 1.0f, 1.0f, 1.0f, btWA);
             }
             #undef EX_PV
         }
@@ -3065,7 +3522,7 @@ void Gameplay_Render(void)
         {
             if (g_fontArrowETC < 0) break;
                 float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
-            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow);
+            float y = BT_Y((float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow));
             if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
             for (int rio = 0; rio < panelCount; rio++)
             {
@@ -3098,10 +3555,10 @@ void Gameplay_Render(void)
                     sh = (float)g_game.sprTiles[idx].srcH;
                     tailSkinDX = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
                 }
-                float tailAlpha = 1.0f;
+                float tailAlpha = btWA;
                 if (g_game.cmdVanish[p]) {
                     float fade = (y - 122.0f) / 84.0f;
-                    tailAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                    tailAlpha = (fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade)) * btWA;
                 }
                 /* X-MODE: a ponta sai na mesma chamada do corpo, com o X da
                  * cabeça do hold (volta até o NT_HOLD_H do mesmo painel). */
@@ -3114,7 +3571,7 @@ void Gameplay_Render(void)
                                    : getPanelValue(&g_chart->rows[hr], panel, p));
                         if (hv == NT_HOLD_H) {
                             float vh = (hr < g_visualRowCount && g_visualRow) ? (float)g_visualRow[hr] : (float)hr;
-                            headY = (float)(receptorY + rh2 / 2 + (vh - visualScrollRow) * pPixelsPerRow);
+                            headY = BT_Y((float)(receptorY + rh2 / 2 + (vh - visualScrollRow) * pPixelsPerRow));
                             break;
                         }
                         if (hv != NT_HOLD_B) break;
@@ -3129,7 +3586,7 @@ void Gameplay_Render(void)
         for (int ri = startRow; ri <= endRow; ri++)
         {
             float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
-            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow);
+            float y = BT_Y((float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow));
             if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
             for (int rio = 0; rio < panelCount; rio++)
             {
@@ -3150,6 +3607,32 @@ void Gameplay_Render(void)
                 if (!val && g_divSpec[p] && !isHalfDouble && !isDoubleOrNightmare && panel < 5) {
                     uint8_t sv = g_divSpec[p][ri * 5 + panel];
                     if (sv == NT_DIV_W || sv == NT_DIV_G) val = sv;   /* A (4) nao desenha */
+                }
+                /* BATTLE: nota de item (0x14..0x1F) guardada fora do chart */
+                if (!val && g_btItem[p] && !isHalfDouble && !isDoubleOrNightmare && panel < 5) {
+                    uint8_t bt = g_btItem[p][ri * 5 + panel];
+                    if (bt && !g_game.cmdNonStep[p]) {
+                        int as = (arrowIdx == 0) ? g_fontArrow542 : (arrowIdx == 1) ? g_fontArrow541 :
+                                 (arrowIdx == 2) ? g_fontArrow545 : (arrowIdx == 3) ? g_fontArrow543 : g_fontArrow544;
+                        if (as >= 0) {
+                            int af = arrowAnimFrame();
+                            float aw = (float)g_game.sprTiles[as + af].srcW;
+                            int nt = as + af;
+                            float cx = posX[panel] + aw / 2.0f + XM_DXP(panel, y);
+                            if (g_skinTap[arrowIdx] >= 0) {
+                                nt = g_skinTap[arrowIdx] + af;
+                                if (nt >= g_game.sprTileCount) nt = g_skinTap[arrowIdx];
+                                cx += g_skinOffX[arrowIdx];
+                            }
+                            float na = btWA;
+                            if (g_game.cmdVanish[p]) {
+                                float fade = (y - 122.0f) / 84.0f;
+                                na = (fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade)) * btWA;
+                            }
+                            btDrawItemNote(p, bt, cx, y, nt, na);
+                        }
+                    }
+                    continue;
                 }
                 if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
@@ -3178,10 +3661,10 @@ void Gameplay_Render(void)
                     int aidx = arrowSpr + af;
                     float sw = (float)g_game.sprTiles[aidx].srcW;
                     float sh = (float)g_game.sprTiles[aidx].srcH;
-                    float noteAlpha = 1.0f;
+                    float noteAlpha = btWA;
                     if (g_game.cmdVanish[p]) {
                         float fade = (y - 122.0f) / 84.0f;
-                        noteAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                        noteAlpha = (fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade)) * btWA;
                     }
                     /* Exceed2: nota/cabeça do hold pela skin (skinN / skinN_l1),
                      * centrada onde ficava a seta do ARROW54X + ajuste da skin */
@@ -3223,10 +3706,11 @@ void Gameplay_Render(void)
                 int sIdx = g_skinL1[arrowGroup] + arrowAnimFrame();
                 if (sIdx >= g_game.sprTileCount) sIdx = g_skinL1[arrowGroup];
                 Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f + g_skinOffX[arrowGroup] + XM_DXP(panel, y), y,
-                                  (float)g_game.sprTiles[sIdx].srcW, (float)g_game.sprTiles[sIdx].srcH, 1.0f);
+                                  (float)g_game.sprTiles[sIdx].srcW, (float)g_game.sprTiles[sIdx].srcH, btWA);
             } else
-            Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f + XM_DXP(panel, y), y, sw, sh, 1.0f);
+            Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f + XM_DXP(panel, y), y, sw, sh, btWA);
         }
+        #undef BT_Y
         #undef XM_DX
         #undef XM_DXP
         #undef XM_S
@@ -3311,6 +3795,8 @@ void Gameplay_Render(void)
             else if (g_game.stageCount == 1) stageSpr = g_fontSprM02;
             else                             stageSpr = g_fontSprM03;
         }
+        /* PIU32 0x402719: com o bit battle (0x40) o indicador de estágio não é desenhado */
+        if (BLua_IsActive()) stageSpr = -1;
         if (stageSpr >= 0 && g_game.sprTileCount > stageSpr) {
             float sx = (float)g_game.sprTiles[stageSpr].srcX;
             float sy = (float)g_game.sprTiles[stageSpr].srcY;
@@ -3550,7 +4036,25 @@ void Gameplay_Render(void)
                 beat = 1.0f - fmodf((float)g_songTime, period) / period;
             }
         }
-        if (isDoubleOrNightmare && g_fontSprGGD >= 0) {
+        if (BLua_IsActive() && g_btBga[0] >= 0) {
+            /* PIU32 0x4055DB: corações; 0x405711: DrawItemBox (o OnTick vem
+             * antes das setas, no início do Gameplay_Render) */
+            for (int p = 0; p < 2; p++)
+                if (g_game.activePlayerMask & (1 << p)) exHeartsDraw(p);
+            /* arcade 0x805A457..0x805A486: DrawItemBox só fora do HYBRID
+             * (-BTH, bit 0x10000); -BT/-BTM/-BTV não têm outro teste no EXE */
+            if (!(g_exBattleModeBit & 0x10000))
+                for (int p = 0; p < 2; p++)
+                    if (g_game.activePlayerMask & (1 << p)) BLua_DrawItemBox(p);
+            /* 0x405716..0x405755 / 0x4057B1..0x4057F3: flash branco da mina na
+             * metade do jogador, glColor4f(1,1,1, t*0.02), retângulo 320x480 */
+            for (int p = 0; p < 2; p++)
+                if (g_btFlash[p] > 0) {
+                    float a = g_btFlash[p] * 0.02f;
+                    Render_Rect(p ? 320.0f : 0.0f, 0.0f, 320.0f, 480.0f, 255, 255, 255,
+                                (uint8_t)((a > 1.0f ? 1.0f : a) * 255.0f));
+                }
+        } else if (isDoubleOrNightmare && g_fontSprGGD >= 0) {
             exLifebarDraw(0, beat, true);
         } else {
             for (int p = pRend0; p < pRend1; p++)

@@ -88,6 +88,12 @@ static void applyItems(const int items[4]) {
         BGA_SetLayerSrc(ST_BGA, k_slots[i], &g_item[items[i]][0]);
         BGA_SetLayerSrc(ST_BGA, k_slots[i] + 1, &g_item[items[i]][1]);
     }
+    /* Não existe no original: os slots 16/17 (pulso da cena "select") vêm
+     * do STATION.BGA com se_arcS fixo e o PIU32 nunca os troca, então o
+     * brilho do ARCADE aparecia também no REMIX/BATTLE. Usa a arte acesa
+     * da estação selecionada. */
+    BGA_SetLayerSrc(ST_BGA, 16, &g_item[g_sel][1]);
+    BGA_SetLayerSrc(ST_BGA, 17, &g_item[g_sel][1]);
 }
 
 static void setLayout(int anim) {
@@ -266,7 +272,10 @@ void Station_Update(float dt) {
              * BATTLE -> "HELP 1" -> "SELECT 4" (0x411A63). O tutorial HELP
              * ainda não existe: o BATTLE vai direto para a Select. */
             if (g_sel == ST_REMIX)       ExSelect_SetStation(1, 3);
-            else if (g_sel == ST_BATTLE) ExSelect_SetStation(2, 4);
+            else if (g_sel == ST_BATTLE) {
+                ExSelect_SetStation(2, 4);
+                g_joined |= 3;   /* 0x419FE0: BATTLE -> [0x484F7C] |= 3 (os dois entram) */
+            }
             else                         ExSelect_SetStation(0, 0);
             Movie_Close();
             BGM_Stop();

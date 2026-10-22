@@ -57,7 +57,7 @@ typedef void* LPDIRECTSOUNDBUFFER;
 
 #define MAX_TEXTURES 2048
 #define MAX_SOUNDS 64
-#define MAX_BGA_PICS 50
+#define MAX_BGA_PICS 16      /* era 50; com 100 camadas x 768 kf cada BGAPicture tem ~4.6 MB */
 #define MAX_BGA_EVENTS 6000
 #define MAX_SPR_TILES 4096
 
@@ -239,6 +239,10 @@ typedef struct {
     int type;
     int blendMode;
     int z_order;
+    int interp;   /* BGA3 +4 do keyframe; > 3 = máscara de stencil (arcade 0x804D1DF) */
+    int ease;     /* BGA3 +0x3C: easing de x/y (arcade 0x804DBAE) */
+    float c1x, c1y, c2x, c2y;   /* BGA3 +0x50..+0x5C: controles da Bézier (tipos 2/3) */
+    int segs;     /* BGA3 +0x60: segmentos da Bézier */
 } BGAKeyframe;
 
 typedef struct {
@@ -250,8 +254,8 @@ typedef struct {
     bool flipH, flipV;
 } SPRTileDef;
 
-#define MAX_BGA_LAYERS 64
-#define MAX_BGA_KEYFRAMES 512
+#define MAX_BGA_LAYERS 100    /* BGA3: 100 slots (PIU32 0x41ED72); BT_ITEM usa os 100 */
+#define MAX_BGA_KEYFRAMES 768 /* BT_GUI: 720 depois da expansão de grupos */
 
 typedef struct {
     char filename[64];
@@ -267,7 +271,7 @@ typedef struct {
     int patFlags;
 } BGALayer;
 
-#define MAX_BGA_SCENES 32
+#define MAX_BGA_SCENES 320    /* BT_GUI: 274 cenas */
 
 typedef struct {
     char name[64];
@@ -581,6 +585,7 @@ typedef enum {
     SND_GAMESTOP,   /* Exceed GAMESTOP.WAV  [0xA6D2F0]: Stage Break (0x4152ED) */
     SND_9_5,        /* Exceed 9-5.WAV       [0xA6D2F8]: CGrade t=158 (0x40D4DF) */
     SND_NEXTSTAGE,  /* Exceed NEXTSTAGE.WAV [0xA6D2FC]: NEXTSTAGE (0x41517F) */
+    SND_GAMEOVER,   /* Exceed2 GAMEOVER.WAV [0xCA0E78]: GAMEOVER Begin (PIU32 0x412B96) */
     SND_COUNT
 } SoundID;
 
@@ -702,6 +707,33 @@ unsigned Title_GetJoinedMask(void); /* intro.c — [0x568FF4] bits 0/1 */
 void Title_SetJoinedMask(unsigned m);
 void Station_Update(float dt);      /* station.c — CStation do Exceed2 */
 void Station_Render(void);
+
+/* battle_lua.c — scripts Lua 5.0 do modo de jogo (PIU32.EXE 0x40B6A0) */
+extern int g_bluaScore[2][7];
+extern int g_exStation;              /* exceed_select.c: [0x484FB4] 0 ARCADE, 1 REMIX, 2 BATTLE */
+extern unsigned g_exBattleModeBit;   /* exceed_select.c: 0x2000/0x4000/0x8000/0x10000 (-BT..-BTH) */
+int  BLua_Init(int battle);
+void BLua_Close(void);
+int  BLua_IsActive(void);
+void BLua_ResetData(int p, int level);
+void BLua_SetJudgeGauge(int p, int j);
+void BLua_SetJudge(int p, int j);
+void BLua_OnTick(int p, int timeMs);
+int  BLua_GetLifeGaugeMeter(int p);
+int  BLua_GetLifeGaugeStatus(int p);
+void BLua_DrawItemBox(int p);
+extern int g_btBga[4];               /* BT_GUI, BT_ITEM, BT_C1, BT_C2 (índices em bgaPics) */
+extern int g_fontSkinItem[12];       /* resource.c: skin_*.spr das notas de item (tipo 0x14+i) */
+extern int g_fontSkinItemN[12];
+int  BLua_GetItemSlot(int p, int k); /* 0x40C5E0: GetItemSlot(k), k = 1..4 */
+void BLua_PlayEffect(int n);         /* EFFECT(n) (0x41D3D0) */
+void BLua_DrawEffectFont(void);      /* arcade 0x80594DD */
+void BLua_ResetEffectFont(void);
+/* gameplay.c: efeitos do EXE pedidos pelo script */
+extern int g_btFinalHearts[2];       /* gameplay.c: corações no fim (nota WIN/LOSE) */
+void Gameplay_BattleSetLevel(int p, int level);   /* 0x40C120, PM_SET_PLAY_LEVEL */
+void Gameplay_BattleResetSpeed(int p);            /* 0x40C120, PM_RESET_TO_DEFAULT */
+void Gameplay_BattleItemProc(int p, int item, int level);   /* 0x40C2B0 */
 /* Exceed: songDB sintético montado das tabelas do exceed.exe quando não há
  * Stage.cfg. Com ele, os IDs são hex e os arquivos saem em "%X"
  * (STEP\%X.STX, AUDIO\%X.AUD, BGA\%X.DAT, TITLE\T%X.PNZ). */

@@ -373,7 +373,8 @@ static const char* g_waveFiles[SND_COUNT] = {
     "PUSHPANEL.wav",  // SND_PUSHPANEL
     "GAMESTOP.wav",   // SND_GAMESTOP
     "9-5.wav",        // SND_9_5
-    "NEXTSTAGE.wav"   // SND_NEXTSTAGE
+    "NEXTSTAGE.wav",  // SND_NEXTSTAGE
+    "GAMEOVER.wav"    // SND_GAMEOVER
 };
 
 int g_waveSoundIds[SND_COUNT];

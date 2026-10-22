@@ -157,6 +157,10 @@ static GameState exNextState(void) {
     int st = exStageIdx();
     Log_Print("RESULT(EX): estágio %d razão P1 %.3f P2 %.3f\n", st, r1, r2);
     if (r1 < 0.75f && r2 < 0.75f) return STATE_GAMEOVER_ENTER;   /* 0x40D0F3 */
+    /* PIU32 0x40B5C1..0x40B5E6: no BATTLE STATION ([0x484FB4] == 2) o estágio
+     * 0 vai direto para GAMEOVER — uma música por partida. (O caso EEPROM
+     * +0x7EC == 1 -> IDLE, testado antes, não foi portado: flag não identificada.) */
+    if (g_exStation == 2) return STATE_GAMEOVER_ENTER;
     if (st == 0 || st == 1) {                                    /* NEXTSTAGE 1 / 2 */
         g_game.bonusStage = true;
         return STATE_STAGE_TRANSITION;
@@ -294,7 +298,7 @@ static void exLetter(int grade, int frame)
 
 static void exPlayer(int p, int t)
 {
-    /* perfect, great, good, bad, miss, max combo (3 dígitos) e score (7) */
+    /* perfect, great, good, bad, miss, max combo (3/4 dígitos) e score (7/8) */
     static const int k_y[7] = { 0x143, 0x10F, 0xDC, 0xA8, 0x75, 0x41, 0x0F };
     int v[7] = {
         g_game.stats.perfectCount[p], g_game.stats.greatCount[p],
@@ -304,12 +308,27 @@ static void exPlayer(int p, int t)
     };
     for (int i = 0; i < 7; i++) {
         if (t < 10 * i) break;
-        int nd = (i == 6) ? 7 : 3;
-        if (p == 0) exNumP1(i == 6 ? 0x96 : 0x3E, k_y[i], v[i], nd, t - 10 * i);
+        /* PIU32 0x40A9B1..0x40AF06: nd = 3 + (v >= 1000), score 7 + (v >= 10000000);
+         * P1 x = 22*nd - 4, P2 x fixo 0x251 */
+        int nd = (i == 6) ? 7 + (v[i] >= 10000000) : 3 + (v[i] >= 1000);
+        if (p == 0) exNumP1(22 * nd - 4, k_y[i], v[i], nd, t - 10 * i);
         else        exNumP2(0x251, k_y[i], v[i], nd, t - 10 * i);
     }
     /* t >= 150: letra no quadro t+300 (P1) / t+600 (P2). */
     if (t < 0x96) return;
+    if (g_exStation == 2) {
+        /* BATTLE STATION (PIU32 0x40AB5A P1 / 0x40AF1A P2): vence quem tem mais
+         * corações; empatado, o P1 vence com pontuação >= a do P2. */
+        int h0 = g_btFinalHearts[0], h1 = g_btFinalHearts[1];
+        unsigned s0 = g_game.stats.score[0], s1 = g_game.stats.score[1];
+        bool p1Wins = (h0 != h1) ? (h0 > h1) : (s0 >= s1);
+        bool win = (p == 0) ? p1Wins : !p1Wins;
+        int slot = win ? 0x29 : 0x26;
+        int frame = t + (p == 0 ? 300 : 600);
+        BGA_DrawSlot(0, frame, slot);
+        BGA_DrawSlot(0, frame, slot + 1);
+        return;
+    }
     if (g_game.isBattleMode) {
         /* BATTLE ([0x568FF4] & 0x40), 0x40DAE9 (P1) / 0x40D78D (P2): no lugar da
          * letra, WIN (0x29/0x2A) ou LOSE (0x26/0x27). Vence o maior max combo;
@@ -333,7 +352,7 @@ static void exGradeSounds(int t)
         Audio_Play(g_waveSoundIds[SND_8_1], false);
     if (t == 0x9E)                               /* 0x40D4DF: 9-5.WAV */
         Audio_Play(g_waveSoundIds[SND_9_5], false);
-    if (t == 0xA3) {                             /* 0x40D312: melhor nota */
+    if (t == 0xA3 && g_exStation != 2) {         /* 0x40D312: melhor nota; PIU32 0x40B265: não no battle */
         int best = 5;
         if ((g_game.activePlayerMask & 1) && g_gradeP1 < best) best = g_gradeP1;
         if ((g_game.activePlayerMask & 2) && g_gradeP2 < best) best = g_gradeP2;

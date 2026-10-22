@@ -116,8 +116,24 @@ endif()
 #     COMMENT "Embutindo WAVE/*.wav"
 #     VERBATIM)
 
+# Lua 5.0.2 (o PIU32.EXE embute a mesma versão: "Lua 5.0.2 Copyright (C) 1994-2004").
+# Roda os SCRIPT\*.LUA originais do Battle Station (bytecode 5.0).
+file(GLOB LUA50_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-5.0.2/src/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-5.0.2/src/lib/*.c")
+add_library(lua50 STATIC ${LUA50_SOURCES})
+target_include_directories(lua50 PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-5.0.2/include")
+target_include_directories(lua50 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-5.0.2/src")
+target_compile_definitions(lua50 PRIVATE _CRT_SECURE_NO_WARNINGS)
+if(MSVC)
+    target_compile_options(lua50 PRIVATE /W0)
+endif()
+
 add_executable(Pumpy
     src/main.c
+    src/battle_lua.c
     src/window.c
     src/warning.c
     src/logo.c
@@ -172,7 +188,7 @@ target_compile_definitions(Pumpy PRIVATE
     SDL_MAIN_HANDLED          # main() próprio, sem SDL2main (ver window.c: SDL_SetMainReady)
 )
 
-target_link_libraries(Pumpy PRIVATE pumpy_deps)
+target_link_libraries(Pumpy PRIVATE pumpy_deps lua50)
 
 if(MSVC)
     target_compile_options(Pumpy PRIVATE /W3)

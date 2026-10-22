@@ -378,6 +378,16 @@ static void checkCodes(int p) {
 #define EX_MODE_BATTLE 5
 static const int k_modeBit[6]  = { 0x10, 0x20, 0x400, 0x200, 0x800, 0x40 };
 static const int k_modeIcon[6] = { 44, 45, 46, 47, 48, 49 };
+
+/* Painel do BATTLE STATION (canal 4) — só no build arcade (game\piu, select.cpp);
+ * o PIU32.EXE do PC não tem. Bits 0x808D2B0, ícones 0x808D2C0 (SELECT2 slots
+ * 60..63, quadro 1920), comandos 0x807C952.. Todos usam o chart do modo 7 e
+ * ligam o bit em [0x80BECD4] (= [0x484F7C] do PC) no parser do RUN (0x80585DB). */
+#define EX_BT_MODES 4
+static const unsigned k_btBit[EX_BT_MODES]   = { 0x2000, 0x4000, 0x8000, 0x10000 };
+static const int      k_btIcon[EX_BT_MODES]  = { 60, 61, 62, 63 };   /* B_item B_mine B_hyper B_hyb */
+static const char*    k_btArg[EX_BT_MODES]   = { "-BT", "-BTM", "-BTV", "-BTH" };
+unsigned g_exBattleModeBit = 0;   /* bit do modo escolhido, para o gameplay */
 /* sufixo do comando RUN (0x1283C44..0x1283C74) por modo */
 static const char* k_modeArg[5] = { "-n", "-h", "-c", "-d", "-nm" };
 /* quadro do fundo do painel por índice: parado / entrando pela esquerda / pela direita */
@@ -636,6 +646,17 @@ static void openPanel(void) {
     if (s < 0) return;
     g_modeCount = 0;
     g_panel2P = (g_joined & 3) == 3;
+    /* arcade 0x8066FE8: no canal 4 a máscara é fixa 0x1E000 ([+0xA0] = 4),
+     * os quatro modos do battle; g_modeList guarda o índice em k_btBit */
+    if (g_ch == 4) {
+        for (int k = 0; k < EX_BT_MODES; k++) g_modeList[g_modeCount++] = k;
+        if (!g_previewOn) startPreview();
+        g_chosen = true;
+        g_panelFrame = 0;
+        g_panelIdx = 0;
+        g_panelDir = 0;
+        return;
+    }
     /* Exceed2 0x416210..0x4163FA: modo disponível = nível != -1 e trava
      * (+0x3C + k) == 0; +0x94 fica com o último entre N/H/C. As linhas vêm de
      * 0x45A444 (1P: N H C FS NM) ou 0x45A46C (2P: N H C; o 4º bit é 0, então a
@@ -700,11 +721,17 @@ static void startGame(void) {
      * Itens/medidores do modo batalha (SCRIPT\BATTLEMODE.LUA) ainda não existem. */
     if (g_ch == 4) {
         int id = (int)g_exSongs[s].id;
+        /* arcade 0x80674EE: modo = 0x80C5B58[índice do painel] (linhas na
+         * ordem de k_btBit); painel nunca aberto -> 1º modo (-BT): hipótese */
+        int bt = (g_chosen && g_panelIdx >= 0 && g_panelIdx < g_modeCount)
+                 ? g_modeList[g_panelIdx] : 0;
         g_started = true;
         Eeprom2_CountPlay(s);   /* 0x4168FA */
         stopPreview();
         playWave(SND_START);
-        Log_Print("EXSELECT: RUN %X -BT\n", (unsigned)id);
+        g_armed = false;
+        g_exBattleModeBit = k_btBit[bt];
+        Log_Print("EXSELECT: RUN %X %s (bit 0x%X)\n", (unsigned)id, k_btArg[bt], k_btBit[bt]);
         g_game.selectedSongIndex = Song_FindByID(&g_game.songDB, id);
         g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, k_dbModeName[EX_DB_DIVISION]);
         if (g_game.selectedSongIndex < 0 || g_game.selectedModeIndex < 0) {
@@ -867,14 +894,10 @@ void ExSelect_Update(float dt) {
             moveCursor(2);
         /* 0x41770B..0x41775D: CENTER (bit 0x04 / 0x400) */
         else if (padHit(PAD_C)) {
-            /* Exceed2 0x41618A: no BATTLE não há painel — o 1º CENTER arma
-             * (+0x9C), o 2º zera o contador e o jogo começa */
-            if (g_ch == 4) {
-                if (g_armed) g_timeLeft = 0;
-                else         g_armed = true;
-            } else {
-                openPanel();
-            }
+            /* PIU32 0x41618A: no BATTLE o PC não tem painel (o 1º CENTER arma,
+             * o 2º começa). O arcade abre o painel dos modos do battle
+             * (0x8066FE8), como nos outros canais. */
+            openPanel();
         }
     } else {
         if (padHit(PAD_UL) || padHit(PAD_UR)) {
@@ -898,7 +921,7 @@ void ExSelect_Update(float dt) {
                 g_panelFrame = 60;
                 g_panelIdx++;
                 g_panelDir = 2;
-            } else if (g_panel2P) {
+            } else if (g_panel2P && g_ch != 4) {
                 int s = findSong(g_list[wrapCursor(g_cursor[g_ch])]);
                 if (s >= 0) cycleBattleDiff(s);   /* 0x41769E -> 0x41816A */
                 g_panelDir = 0;                   /* 0x4176AF */
@@ -1116,6 +1139,20 @@ static void drawNumber(int x, int y, int w, int h, int step, int value, int digi
 /* Linha do painel: quadro (slot 34), número do nível e ícone do modo.
  * bright/alpha seguem os dois ramos de 0x4179A5 e 0x417C7C. */
 static void drawPanelRow(int s, int m, bool lit, float hl, float b) {
+    if (g_ch == 4) {
+        /* arcade 0x8066378..0x80664A1: tudo no quadro 1920, sem número */
+        BGA_DrawSlot(SEL2_BGA, 1920, 34);
+        if (lit) {
+            BGA_SetColor(SEL2_BGA, 1.0f, hl);
+            BGA_DrawSlot(SEL2_BGA, 1920, 39);
+            BGA_SetColor(SEL2_BGA, b, 1.0f);
+        } else {
+            BGA_SetColor(SEL2_BGA, 0.5f, 1.0f);
+        }
+        BGA_DrawSlot(SEL2_BGA, 1920, k_btIcon[m]);
+        BGA_SetColor(SEL2_BGA, 1.0f, 1.0f);
+        return;
+    }
     BGA_DrawSlot(SEL2_BGA, 1170, 34);
     if (lit) {
         BGA_SetColor(SEL2_BGA, 1.0f, hl);
@@ -1160,6 +1197,24 @@ static void drawPanel(void) {
             glTranslatef(cx, y, 0.0f);
             int m = g_modeList[k];
             BGA_SetColor(SEL2_BGA, 1.0f, ca);              /* 0x417A53 */
+            if (g_ch == 4) {
+                /* arcade 0x8065CE9..0x8065E23: linha no quadro 1920; a 1ª
+                 * com o destaque (slot 39) no 660; demais com o ícone a 0.5 */
+                BGA_DrawSlot(SEL2_BGA, 1920, 34);
+                if (k == 0) {
+                    BGA_DrawSlot(SEL2_BGA, 660, 39);
+                    BGA_DrawSlot(SEL2_BGA, 1920, k_btIcon[m]);
+                } else {
+                    BGA_SetColor(SEL2_BGA, 0.5f, 1.0f);
+                    BGA_DrawSlot(SEL2_BGA, 1920, k_btIcon[m]);
+                    BGA_SetColor(SEL2_BGA, 1.0f, 1.0f);
+                }
+                glPopMatrix();
+                x += -35.0f;
+                y += -70.0f;
+                a += -0.25f;
+                continue;
+            }
             BGA_DrawSlot(SEL2_BGA, 1170, 34);
             if (k == 0) {                                  /* 0x417A91 */
                 BGA_DrawSlot(SEL2_BGA, 660, 39);

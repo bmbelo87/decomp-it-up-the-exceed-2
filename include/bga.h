@@ -20,6 +20,8 @@ void BGA_SetColor(int bgaIndex, float rgb, float a);   /* 0x41F754 */
 void BGA_ScenePlay(int bgaIndex, const char* name, bool draw);   /* 0x41f0f0 */
 bool BGA_SceneDone(int bgaIndex, const char* name);              /* 0x41f2e0 */
 void BGA_SceneReset(int bgaIndex, const char* name);             /* 0x41f390 */
+void BGA_SceneSet(int bgaIndex, const char* name, int where);    /* 0x41f260 */
+void BGA_SceneResetAll(int bgaIndex);                            /* 0x41f350 */
 int  BGA_SceneFrame(int bgaIndex, const char* name);             /* [+0x13a30], -1 sem cena */
 void BGA_DrawFrame(int bgaIndex, int frame);                     /* 0x41ece0 */
 void BGA_ScenePlayAt(int bgaIndex, const char* name, int offset); /* 0x41f200 */

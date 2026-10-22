@@ -718,6 +718,13 @@ static void bga3_emit(BGALayer* layer, const uint8_t* r, int frameAdd) {
     kf->frame = (int)*(const int16_t*)(r + 0) + frameAdd;
     kf->type = (grp == 1) ? 1 : 0;
     kf->blendMode = (int)*(const int16_t*)(r + 6);
+    kf->interp = (int)*(const int16_t*)(r + 4);
+    kf->ease = (int)*(const int16_t*)(r + 0x3C);
+    kf->c1x = *(const float*)(r + 0x50);
+    kf->c1y = *(const float*)(r + 0x54);
+    kf->c2x = *(const float*)(r + 0x58);
+    kf->c2y = *(const float*)(r + 0x5C);
+    kf->segs = (int)*(const int16_t*)(r + 0x60);
     kf->x = *(const float*)(r + 0x08);
     kf->y = *(const float*)(r + 0x0C);
     kf->hotx = *(const float*)(r + 0x10);
@@ -807,6 +814,7 @@ static bool parseBGA3(const uint8_t* d, uint32_t size, BGAPicture* bga) {
 }
 
 static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
+    if (g_game.bgaPicCount >= MAX_BGA_PICS) { Log_Print("BGA: limite MAX_BGA_PICS (%d)\n", MAX_BGA_PICS); return false; }
     uint32_t bgaSize = RES_GetSize(bgaIdx);
     uint8_t* bgaData = RES_ReadAlloc(bgaIdx);
     if (!bgaData) return false;
@@ -1215,6 +1223,7 @@ bool Resource_LoadBGAByName(const char* datName) {
 }
 
 bool Resource_LoadBGADirect(const char* datPath) {
+    if (g_game.bgaPicCount >= MAX_BGA_PICS) { Log_Print("BGA: limite MAX_BGA_PICS (%d)\n", MAX_BGA_PICS); return false; }
     g_game.isVSL = false;
 
     if (VSL_IsVSL(datPath)) {
@@ -1824,6 +1833,8 @@ int g_fontArrow545 = -1;
 int g_fontArrowETC = -1;
 int g_fontArrowF = -1;
 int g_fontSpark = -1;   /* Exceed2: spark.spr (TYPE ani, stepfx0..4), [obj+0x34194] */
+int g_fontSkinItem[12]  = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };  /* skin_*.spr, tipo 0x14+i */
+int g_fontSkinItemN[12] = { 0 };                                                /* tiles de cada um */
 
 void Resource_LoadFontAndArrows(const char* datPath) {
     if (!RES_Open(datPath)) return;
@@ -1854,6 +1865,23 @@ void Resource_LoadFontAndArrows(const char* datPath) {
     g_fontSpark = g_game.sprTileCount;
     SPR_LoadSPR("spark.spr", NULL, NULL, NULL);
     if (g_game.sprTileCount == g_fontSpark) g_fontSpark = -1;
+    /* Exceed2 0x405A26..: sprites das notas de item do battle, tipos 0x14..0x1F
+     * ([obj+0x348A8 + 0x714*i]); o 0x19 (mina) não tem sprite (seta escurecida). */
+    {
+        static const char* const k_skinItem[12] = {
+            "skin_act.spr", "skin_shi.spr", "skin_cha.spr", "skin_acc.spr", "skin_wea.spr", NULL,
+            "skin_min.spr", "skin_sma.spr", "skin_dra.spr", "skin_bon.spr", "skin_vel.spr", "skin_ran.spr" };
+        for (int i = 0; i < 12; i++) {
+            g_fontSkinItem[i] = -1;
+            if (!k_skinItem[i]) continue;
+            int st = g_game.sprTileCount;
+            SPR_LoadSPR(k_skinItem[i], NULL, NULL, NULL);
+            if (g_game.sprTileCount > st) {
+                g_fontSkinItem[i] = st;
+                g_fontSkinItemN[i] = g_game.sprTileCount - st;
+            }
+        }
+    }
 
     g_fontSpr01 = g_game.sprTileCount;
     SPR_LoadSPR("01.spr", NULL, NULL, NULL);

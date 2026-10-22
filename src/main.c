@@ -552,7 +552,7 @@ void Game_Update(float dt) {
     case STATE_GAMEOVER_ENTER:
         if (g_exceedSongIds) {
             /* exceed.exe 0x415224: BGA\GAMEOVER.MOV sem loop (falha -> IDLE);
-             * 0x41527C: cronômetro >= 4000 ms (0xFA0) -> IDLE. Sem som. */
+             * 0x41527C: cronômetro >= 4000 ms (0xFA0) -> IDLE. (Exceed sem som; Exceed2 toca GAMEOVER.WAV.) */
             static uint32_t goStart;
             if (g_game.stateFrame == 1) {
                 BGM_Stop();
@@ -564,6 +564,8 @@ void Game_Update(float dt) {
                 if (!Movie_Open(path, false))
                     Log_Print("GAMEOVER: '%s' não abriu\n", path);  /* 0x41525D: -> IDLE (abaixo) */
                 goStart = timeGetTime();
+                /* PIU32 0x412B96: Stop + SetCurrentPosition(0) + Play do gameover.wav */
+                if (g_waveSoundIds[SND_GAMEOVER] >= 0) Audio_Play(g_waveSoundIds[SND_GAMEOVER], false);
             }
             Movie_Update(dt);
             if (!Movie_IsOpen() || timeGetTime() - goStart >= 4000) {
@@ -779,7 +781,9 @@ void Game_Render(void) {
         (g_game.state == STATE_DANCE_GRADE_ENTER || g_game.state == STATE_DANCE_GRADE_DISPLAY))
         Movie_Render();
 
-    if ((g_game.cmdTestBGA[0] || g_game.cmdTestBGA[1]) &&
+    /* BATTLE STATION: o PIU32 não carrega o MOV da música (0x4046F8, bit 0x40);
+     * o fundo é o starfield (testbga.c) */
+    if ((g_game.cmdTestBGA[0] || g_game.cmdTestBGA[1] || BLua_IsActive()) &&
                (g_game.state == STATE_GAMEPLAY || g_game.state == STATE_GAMEPLAY_BEGIN)) {
         DrawStar(); /* Extra do port: BGA Off (TestBGA) substitui o BGA/VSL da música */
     } else if (g_game.isVSL && g_vsl.active) {
@@ -836,7 +840,7 @@ void Game_Render(void) {
         Loading_Render();
         break;
     case STATE_GAMEPLAY:
-        if (Movie_IsOpen() && !g_game.cmdTestBGA[0] && !g_game.cmdTestBGA[1])
+        if (Movie_IsOpen() && !g_game.cmdTestBGA[0] && !g_game.cmdTestBGA[1] && !BLua_IsActive())
             Movie_Render();     /* fundo no lugar do .DAT; TestBGA (extra do port) substitui */
         Gameplay_Render();
         break;
