@@ -1112,6 +1112,8 @@ void Gameplay_BattleResetSpeed(int p)
     if (p < 0 || p > 1) return;
     g_game.cmdSpeedMult[p] = g_btSpeedDef[p];
     g_game.cmdEarthworm[p] = false;
+    /* [+0x148] é o alvo da rampa 0x806114C; cmdSpeedMult só é lido no início */
+    g_scrollSpeedTarget[p] = (g_btSpeedDef[p] >= 1) ? (float)g_btSpeedDef[p] : 1.0f;
 }
 
 /* 0x40C2B0: efeito do item no jogador atacado. Sons = buffers 0xCA0E30..0xCA0E70
@@ -1131,7 +1133,10 @@ void Gameplay_BattleItemProc(int p, int item, int level)
         /* arcade 0x806CC5E (o PIU32 0x40C2B0 usa outros valores): nível 0/1/2 ->
          * [+0x148]=1000 e [+0x250] = 300/600/900; outro -> [+0x250]=0,
          * [+0x254]=960. Curvas em btWarpY. */
-        if (level >= 0 && level <= 2) { g_game.cmdSpeedMult[p] = 1; g_btDecel[p] = 300 * (level + 1); }
+        if (level >= 0 && level <= 2) {
+            g_game.cmdSpeedMult[p] = 1; g_scrollSpeedTarget[p] = 1.0f;
+            g_btDecel[p] = 300 * (level + 1);
+        }
         else { g_btDecel[p] = 0; g_btAccel[p] = 960; }
         break;
     case 5:   /* Weather: setas piscando */
@@ -1159,11 +1164,12 @@ void Gameplay_BattleItemProc(int p, int item, int level)
     case 8:   /* Gauge break */
         BLua_PlayEffect(28);
         break;
-    case 0xB: /* Velocity */
+    case 0xB: /* Velocity (arcade 0x806CD7F): [+0x148] = 2000/4000/8000, nível 3 |= 0x1000 */
         if      (level == 0) g_game.cmdSpeedMult[p] = 2;
         else if (level == 1) g_game.cmdSpeedMult[p] = 4;
         else if (level == 2) g_game.cmdSpeedMult[p] = 8;
         else if (level == 3) g_game.cmdEarthworm[p] = true;
+        if (level >= 0 && level <= 2) g_scrollSpeedTarget[p] = (float)g_game.cmdSpeedMult[p];
         break;
     default:
         break;
@@ -2486,12 +2492,32 @@ void Gameplay_Update(float dt)
              * (n*240)/1000 muda → tick de 240 Hz. BPM <= 180: x3 se
              * tick%120 <= 60, senão x2 (onda de 0,5 s); BPM > 180: x2 se
              * tick%90 <= 45, senão x1 (onda de 0,375 s). */
+            /* Prex3 (desativado: o Exceed2 segue o arcade abaixo):
             if (g_game.cmdEarthworm[_p] && currentRow != g_ewLastRow[_p]) {
                 uint32_t tick = (uint32_t)((uint64_t)timeGetTime() * 240u / 1000u);
                 if (g_baseBpm <= 180.0)
                     g_scrollSpeedTarget[_p] = (tick % 120 <= 60) ? 3.0f : 2.0f;
                 else
                     g_scrollSpeedTarget[_p] = (tick % 90 <= 45) ? 2.0f : 1.0f;
+            }
+            */
+            /* arcade (piu 0x805D2EE): a cada quadro, com t = ms da música
+             * ([+0x4AAD4]) e o BPM do bloco atual comparado a 180.0 (0x807B1A8):
+             * BPM > 180 -> t%360 < 181 ? x2 : x1; senão t%500 < 251 ? x3 : x2. */
+            if (g_game.cmdEarthworm[_p]) {
+                double bpm = g_baseBpm;
+                if (g_chart && currentRow >= 0)
+                    for (uint32_t s = 0; s < g_chart->segmentCount; s++) {
+                        uint32_t s0 = g_chart->segments[s].rowStart;
+                        if ((uint32_t)currentRow >= s0 && (uint32_t)currentRow < s0 + g_chart->segments[s].rowCount) {
+                            bpm = g_chart->segments[s].bpm; break;
+                        }
+                    }
+                uint32_t t = (g_songTime > 0.0) ? (uint32_t)(g_songTime * 1000.0) : 0u;
+                if (bpm > 180.0)
+                    g_scrollSpeedTarget[_p] = (t % 360 < 181) ? 2.0f : 1.0f;
+                else
+                    g_scrollSpeedTarget[_p] = (t % 500 < 251) ? 3.0f : 2.0f;
             }
             g_ewLastRow[_p] = currentRow;
 

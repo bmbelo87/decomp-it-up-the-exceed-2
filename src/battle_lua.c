@@ -27,9 +27,10 @@
 #include "lualib.h"
 #include "lauxlib.h"
 
-/* Original: putenv("LUA_PATH=?;?.lua;script/?.lua;script/?") */
-#define BLUA_PATH   "?;?.lua;game/SCRIPT/?.lua;game/SCRIPT/?"
-#define BLUA_DIR    "game/SCRIPT/"
+/* Original: putenv("LUA_PATH=?;?.lua;script/?.lua;script/?")
+ * Port: tenta game/SCRIPT (cópia original de 2013, layout do repo) e depois
+ * SCRIPT/ da pasta do jogo (layout da instalação, igual ao original). */
+static const char *k_bluaDirs[] = { "game/SCRIPT/", "SCRIPT/" };
 
 static lua_State *g_L[2];
 static int        g_battle;          /* 1 = battlemode.lua carregado */
@@ -249,8 +250,16 @@ int BLua_Init(int battle) {
     g_battle = battle;
     for (int p = 0; p < 2; p++) {
         lua_State *L = lua_open();
-        char path[128];
+        char path[MAX_PATH], dir[MAX_PATH], luaPath[MAX_PATH * 2 + 16];
+        FILE *fp = NULL;
         if (!L) return 0;
+        for (size_t d = 0; d < sizeof(k_bluaDirs) / sizeof(k_bluaDirs[0]); d++) {
+            snprintf(dir, sizeof(dir), "%s/%s", g_game.currentDirectory, k_bluaDirs[d]);
+            snprintf(path, sizeof(path), "%s%s", dir,
+                     battle ? "BATTLEMODE.LUA" : "NORMALMODE.LUA");
+            if ((fp = fopen(path, "rb")) != NULL) { fclose(fp); break; }
+        }
+        snprintf(luaPath, sizeof(luaPath), "?;?.lua;%s?.lua;%s?", dir, dir);
         g_L[p] = L;
         /* Hipótese: bibliotecas abertas em 0x41D420/0x43F040. Os scripts
          * usam print, require e math.random. */
@@ -260,13 +269,11 @@ int BLua_Init(int battle) {
         luaopen_math(L);
         lua_settop(L, 0);
         lua_register(L, "print", blua_print);
-        lua_pushstring(L, BLUA_PATH);
+        lua_pushstring(L, luaPath);
         lua_setglobal(L, "LUA_PATH");
         for (size_t i = 0; i < sizeof(g_hostFuncs) / sizeof(g_hostFuncs[0]); i++)
             lua_register(L, g_hostFuncs[i].name, g_hostFuncs[i].fn);
 
-        snprintf(path, sizeof(path), "%s%s", BLUA_DIR,
-                 battle ? "BATTLEMODE.LUA" : "NORMALMODE.LUA");
         if (lua_dofile(L, path) != 0) {
             Log_Print("BLUA: falha ao carregar %s\n", path);
             BLua_Close();

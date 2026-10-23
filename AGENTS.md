@@ -314,7 +314,7 @@ Avoid mixing speculation with confirmed information.
 **Compilation + copy:**
 
 ```sh
-cmake --build build --target Pumpy --config Debug -- /m; if ($?) { Copy-Item -LiteralPath "build\Debug\Pumpy.exe" "F:\16_exc2\game\X2TESTE.EXE" -Force }
+cmake --build build --target Pumpy --config Debug -- /m; if ($?) { Copy-Item -LiteralPath "build\Debug\Pumpy.exe" "E:\16_exc2\teste\game\X2TESTE.EXE" -Force }
 ```
 
 Assets are copied automatically. O target `Pumpy` evita buildar as ferramentas (dump_bga2, etc.).
