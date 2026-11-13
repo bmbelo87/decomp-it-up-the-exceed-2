@@ -22,6 +22,8 @@ typedef struct
 } STAR;
 
 static STAR Star[STAR_COUNT];
+static DWORD  g_starLastMs;   /* port: relógio do passo de 1/60 s (DrawStar) */
+static double g_starAcc;
 
 static int CenterX = 0, CenterY = 0;
 static int StepZ;
@@ -54,7 +56,9 @@ static void PlotStar( int x, int y, int type )
 	glEnd();
 }
 
-static void MoveStars( void )
+/* Port: o original anda um passo por quadro (60 Hz). draw = 0 só avança
+ * (passos de recuperação), sem desenhar. */
+static void MoveStars( int draw )
 {
 	int i, NewX, NewY;
 	long scale;
@@ -75,8 +79,10 @@ static void MoveStars( void )
 		NewX =(int)( CenterX + Star[i].PosX * scale / 100);
 		NewY =(int)( CenterY + Star[i].PosY * scale / 100);
 
-		glColor3f( 1.0f, 1.0f, 1.0f );
-		PlotStar( Star[i].OldX, Star[i].OldY, Star[i].Type );
+		if (draw) {
+			glColor3f( 1.0f, 1.0f, 1.0f );
+			PlotStar( Star[i].OldX, Star[i].OldY, Star[i].Type );
+		}
 
 		Star[i].OldX = NewX;
 		Star[i].OldY = NewY;
@@ -84,7 +90,7 @@ static void MoveStars( void )
 		if(NewX < 639 && NewX > 1 && NewY < 479 && NewY > 1) ;
 		else Star[i].CurZ = -20;
 
-		if ( Star[i].CurZ > -10 )
+		if ( draw && Star[i].CurZ > -10 )
 		{
 			glColor3fv( Star[i].Color );
 			PlotStar( Star[i].OldX, Star[i].OldY, Star[i].Type );
@@ -110,6 +116,7 @@ void InitS( void )
 	CenterX = 320;
 	CenterY = 240;
 	StepZ = 5;
+	g_starLastMs = 0;
 
 	for ( i = 0; i < STAR_COUNT; i++ )
 	{
@@ -117,12 +124,41 @@ void InitS( void )
 	}
 }
 
+/* Port: passo fixo de 1/60 s. Em monitores acima de 60 Hz o quadro sem passo
+ * só redesenha as estrelas paradas; abaixo, os passos extras avançam sem desenhar. */
+static void PlotStill( void )
+{
+	int i;
+	for ( i = 0; i < STAR_COUNT; i++ )
+		if ( Star[i].CurZ > -10 )
+		{
+			glColor3fv( Star[i].Color );
+			PlotStar( Star[i].OldX, Star[i].OldY, Star[i].Type );
+		}
+	glColor3f( 1.0f, 1.0f, 1.0f );
+}
+
 void DrawStar(void)
 {
+	DWORD now = timeGetTime();
+	int steps;
+	if (g_starLastMs == 0) { g_starLastMs = now; g_starAcc = 1000.0 / 60.0; }
+	g_starAcc += (double)(now - g_starLastMs);
+	g_starLastMs = now;
+	if (g_starAcc > 250.0) g_starAcc = 250.0;   /* depois de travadas, não dispara */
+	steps = (int)(g_starAcc / (1000.0 / 60.0));
+	g_starAcc -= steps * (1000.0 / 60.0);
+
 	/* Não assumir estado GL: salva/restaura textura e cor */
 	glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT);
 	glDisable(GL_TEXTURE_2D);
-	MoveStars();
-	NewStars();
+	if (steps == 0) {
+		PlotStill();
+	} else {
+		while (steps-- > 1) { MoveStars(0); NewStars(); }
+		MoveStars(1);
+		NewStars();
+	}
 	glPopAttrib();
+	/* era: MoveStars(); NewStars(); (um passo por quadro desenhado) */
 }

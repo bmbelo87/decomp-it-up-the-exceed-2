@@ -150,6 +150,7 @@ add_executable(Pumpy
     src/nameinput.c
     src/exceed_select.c
     src/station.c
+    src/help.c
     src/eeprom_x2.c
     # src/exceed_songs.c   (Exceed: tabelas do exceed.exe)
     src/exceed2_songs.c

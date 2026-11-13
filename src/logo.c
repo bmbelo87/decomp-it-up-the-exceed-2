@@ -18,7 +18,7 @@ void Gamestate_UpdateLogo(float dt) {
     switch (g_game.state) {
     case STATE_LOGO_ENTER:
         /* exceed.exe CLogo 0x413DB0: com crédito (0x41FE94) vai para TITLE */
-        if (Coin_HasCredit()) {
+        if (Attract_HasCredit()) {   /* era: Coin_HasCredit() */
             Game_ChangeState(STATE_CREDIT);
             return;
         }

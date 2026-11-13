@@ -117,6 +117,7 @@ typedef enum {
     STATE_IR              = 0x94, /* Exceed: CInternetRanking — BGA\IR.DAT + AUDIO\IR.AUD (src/ir.c) */
     STATE_NAMEINPUT       = 0x95, /* Exceed: CNameInput — BGA\085.DAT (src/nameinput.c) */
     STATE_STATION         = 0x96, /* Exceed2: CStation — BGA\STATION.DAT (src/station.c) */
+    STATE_HELP            = 0x97, /* Exceed2 arcade: CHelp — BGA\03*.DAT (src/help.c) */
     STATE_EXIT            = 0xFF,
 } GameState;
 
@@ -129,7 +130,7 @@ typedef enum {
 #define EX_CHANNEL_COUNT  3
 #define EX_CHANNEL_MAX    50
 */
-#define EX_SONG_COUNT     138   /* Exceed2: 0x412DD0 retorna 0x8A */
+#define EX_SONG_COUNT     139   /* Exceed2: 0x412DD0 retorna 0x8A (138); +1 = B58 do arcade `piu` */
 #define EX_CHANNEL_COUNT  5     /* 0 BANYA, 1 K-POP, 2 POP (ARCADE), 3 REMIX, 4 BATTLE */
 #define EX_CHANNEL_MAX    53    /* 0x35: linha de 0xD4 bytes em 0x00458AB8 */
 typedef struct {
@@ -368,6 +369,8 @@ typedef struct {
     int  gfxTexFilter;   /* 0 = SMOOTH (GL_LINEAR), 1 = SHARP (GL_NEAREST) */
     bool gfxShowFps;
     int  gfxAspect;      /* 0 = 4:3 com bordas, 1 = esticar */
+    bool gameStyleModded; /* extra do port: GAME STYLE (PUMPY.INI GameStyle). false = VANILLA (como o
+                           * original), true = MODDED (extras do port, ex.: atração em FREE PLAY) */
     int  gfxUpscale;     /* 0 = OFF, 2/3/4 = xBRZ ao carregar texturas (xbrz.c) */
     
     InputState input;
@@ -711,6 +714,7 @@ void Station_Render(void);
 /* battle_lua.c — scripts Lua 5.0 do modo de jogo (PIU32.EXE 0x40B6A0) */
 extern int g_bluaScore[2][7];
 extern int g_exStation;              /* exceed_select.c: [0x484FB4] 0 ARCADE, 1 REMIX, 2 BATTLE */
+extern unsigned g_exPlayerMods[2];   /* exceed_select.c: bits do jogador (0x4000 DECEL, 0x8000 ACCEL...) */
 extern unsigned g_exBattleModeBit;   /* exceed_select.c: 0x2000/0x4000/0x8000/0x10000 (-BT..-BTH) */
 int  BLua_Init(int battle);
 void BLua_Close(void);
@@ -744,6 +748,12 @@ const char* Song_DataIdStr(int id);
 bool ExSelect_IsXMode(void);
 unsigned ExSelect_GetFlags(void);
 void Attract_Idle(void);            /* Exceed CIdle: próxima tela da atração */
+bool Attract_PlayMovie(const char* name);
+void Attract_Idle_Intro(void);
+bool Attract_HasCredit(void);       /* teste de crédito da atração (MODDED + FREE PLAY: CENTER) */
+void Help_Enter(int battle);        /* arcade HELP / HELP 1 (0x8051D56) */
+void Help_Update(float dt);
+void Help_Render(void);      /* INTRO (CIntro) pelo console */   /* arcade PLAYMOVIE <nome> (0x8050844) */
 extern bool g_exDemo;               /* [0x568FF4] & 0x100000: demo da atração ("-demo") */
 bool Demo_SoundOn(void);            /* EEPROM +0x7F0 */
 void Demo_End(void);
@@ -751,6 +761,16 @@ void Gameplay_ExScoreSync(void);    /* Exceed: GOOD +100, BAD -700, MISS -1000, 
 void ExSelect_BuildSongDB(SongDB* db);
 void ExSelect_Enter(void);          /* exceed_select.c — CSelect */
 bool ExSelect_Run(int id, int m, int demo); /* RUN/PLAY do console: m = 0..4 (N H C D NM) ou 5 (-bt) */
+/* RAW - Exceed 2 Opening (id 001): arcade `piu` 0x8060F3F "RUN 001 -d". Ver RAW_Exceed2_Opening.md */
+#define EX_RAW_ID 0x001
+void ExSelect_RunRaw(void);          /* exceed_select.c: RUN 001 -d (secao 5, Full Double) sem passar pela Select */
+int      Result_ExStageSong(int st);          /* result.c: id da musica do estagio (0 = nenhuma) */
+bool     Result_ExStageCrazy(int st);
+float    Result_ExStageRatio(int p, int st);
+unsigned Result_ExStageMiss(int p, int st);
+unsigned Result_ExStageGreat(int p, int st);
+bool Result_ExRawDue(void);          /* result.c: REMIX, estagio 1, S + 0 MISS nas duas, as duas em Crazy */
+extern bool g_exRaw;                 /* gameplay.c: a musica em jogo e a 001 (sem Stage Break, 0x805A242) */
 /* Roda de banners da Select, ajustável pelo /set do console (0x456E9C..0x456EC4, 0x563AC8/CC) */
 extern float g_exCamX1, g_exCamX2, g_exCamY1, g_exCamY2, g_exCamZ1, g_exCamR, g_exCamR2,
              g_exCamR3, g_exCamTx, g_exCamTy, g_exCamP, g_exCamCy, g_exCamCy2;
@@ -773,6 +793,7 @@ uint8_t* Eeprom2_Data(void);
 uint8_t  Eeprom2_Language(void);
 bool     Eeprom2_SongOff(int i);
 void     Eeprom2_CountPlay(int i);
+void     Eeprom2_ResetRanking(void);       /* arcade piu 0x8069BBC */
 bool     Eeprom2_CanonUnlocked(void);
 void     Eeprom2_SetCanonUnlocked(void);   /* Exceed2: [0x484FB4] e argumento do "SELECT" */
 void ExSelect_Render(void);

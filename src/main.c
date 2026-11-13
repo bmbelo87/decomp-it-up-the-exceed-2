@@ -51,6 +51,7 @@ static void LoadBGAForState(GameState state) {
     case STATE_CREDIT:       bgaName = "82"; break;
     case STATE_NAMEINPUT:    bgaName = "085"; break;    /* CNameInput 0x414012: BGA\085.DAT */
     case STATE_IR:           bgaName = "IR"; break;     /* CInternetRanking 0x41371B: BGA\IR.DAT */
+    case STATE_HELP:         bgaName = ""; break;       /* BGAs carregados em Help_Enter */
     case STATE_STATION:      bgaName = ""; break;       /* STATION.DAT carregado em Station_Enter */
     case STATE_HIGHSCORE:    bgaName = "HS"; break;     /* CHighscore 0x4126E7: BGA\HS.DAT */     /* CTitle::Begin 0x41C04A: BGA\82.DAT sobre o CREDIT.MOV */
     case STATE_LOGO_ENTER:   bgaName = "81"; break;
@@ -158,6 +159,7 @@ void Game_ResetAllCheats(void) {
         g_game.cmdMirror[_p]         = false;
         g_game.cmdRandomStep[_p]     = false;
         g_game.cmdRandomVelocity[_p] = false;
+        g_exPlayerMods[_p] = 0u;
         g_game.cmdEarthworm[_p]      = false;
         g_game.cmdFreedom[_p]        = false;
         g_game.cmdVanish[_p]         = false;
@@ -431,6 +433,9 @@ void Game_Update(float dt) {
         break;
     case STATE_STATION:
         Station_Update(dt);
+        break;
+    case STATE_HELP:
+        Help_Update(dt);
         break;
     case STATE_MENU_ENTER:
     case STATE_MENU_INPUT:
@@ -799,7 +804,8 @@ void Game_Render(void) {
         g_game.state != STATE_SONG_SELECT_B &&
         g_game.state != STATE_CREDIT &&         /* CREDIT desenha por slot (intro.c) */
         g_game.state != STATE_EXSELECT &&
-        g_game.state != STATE_STATION &&        /* STATION desenha por cena (station.c) */
+        g_game.state != STATE_STATION &&
+        g_game.state != STATE_HELP &&           /* HELP desenha os próprios BGAs (help.c) */        /* STATION desenha por cena (station.c) */
         g_game.state != STATE_HIGHSCORE &&
         g_game.state != STATE_IR &&
         g_game.state != STATE_NAMEINPUT) {      /* NAMEINPUT desenha por slot (nameinput.c) */             /* IR desenha o próprio BGA (ir.c) */      /* HIGHSCORE desenha por slot (highscore.c) */       /* EXSELECT desenha por slot (exceed_select.c) */
@@ -825,6 +831,9 @@ void Game_Render(void) {
             break;
         case STATE_STATION:
             Station_Render();
+            break;
+        case STATE_HELP:
+            Help_Render();
             break;
         case STATE_MENU_ENTER:
         case STATE_MENU_INPUT:

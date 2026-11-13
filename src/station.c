@@ -281,6 +281,12 @@ void Station_Update(float dt) {
             BGM_Stop();
             Title_SetJoinedMask(g_joined);
             Menu_ResetState();
+            /* arcade piu 0x806E6CC: BATTLE com SHOW HELP (+0x7F1) -> "HELP 1",
+             * que depois vai para "SELECT 4" */
+            if (g_sel == ST_BATTLE && Eeprom2_Data()[0x7F1] != 0) {
+                Help_Enter(1);
+                return;
+            }
             Game_ChangeState(STATE_EXSELECT);
             return;
         }

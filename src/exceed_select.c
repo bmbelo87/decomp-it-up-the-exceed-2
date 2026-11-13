@@ -84,7 +84,8 @@ const char* Song_IdStr(int id) {
     static char buf[4][16];
     static int slot;
     char* s = buf[slot++ & 3];
-    snprintf(s, 16, g_exceedSongIds ? "%X" : "%d", id);
+    /* arcade: o RUN recebe o id como texto de 3 digitos ("%03X"); o id 1 e "001" (001.STX/.AUD/.MOV, T001H.PNZ) */
+    snprintf(s, 16, g_exceedSongIds ? "%03X" : "%d", id);
     return s;
 }
 
@@ -111,6 +112,15 @@ void ExSelect_BuildSongDB(SongDB* db) {
         e->bpm = (float)g_exSongs[i].bpm;
         const char* t = g_exSongs[i].titleEn[0] ? g_exSongs[i].titleEn : g_exSongs[i].titleKr;
         strncpy(e->title, t, sizeof(e->title) - 1);
+    }
+    /* RAW - Exceed 2 Opening (001): fora de g_exSongs e dos canais; so entra por
+     * "RUN 001 -d" (arcade 0x8060F3F). Existe para o Song_FindByID do fluxo
+     * Loading/Gameplay. BPM 88.0 = float no inicio do cabecalho de cada secao do 001.STX. */
+    if (db->songCount < MAX_SONGS) {
+        SongEntry* e = &db->songs[db->songCount++];
+        e->id = EX_RAW_ID;
+        e->bpm = 88.0f;
+        strncpy(e->title, "RAW", sizeof(e->title) - 1);
     }
     for (int m = 0; m < 5; m++) {
         SongMode* md = &db->modes[db->modeCount++];
@@ -175,6 +185,7 @@ void ExSelect_SetStation(int station, int startChannel) {
 }
 static unsigned g_flags;        /* [0x568FF4] acima de 0xFFF (X-MODE) */
 bool ExSelect_IsXMode(void) { return (g_flags & 0x8000u) != 0; }
+unsigned g_exPlayerMods[2];   /* modificadores do jogador ao sair da Select */
 /* [0x484F7C] acima de 0xFFF: skin (0x10000 / 0x20000, PIU32.EXE 0x4043A1) etc. */
 unsigned ExSelect_GetFlags(void) { return g_flags; }
 static unsigned g_mods[2];      /* +0x184 de cada jogador */
@@ -192,6 +203,14 @@ static const uint8_t k_code24[24] = {
 /* EEPROM +0x525 do arcade. O layout de EEPROM do projeto ainda é o do Exceed,
  * então por enquanto vale só durante a execução. */
 static bool g_exCanonUnlocked = false;
+
+/* Secretas por Select (arcade `piu` 0x8062FF0 reset + 0x806307E regras). Nada disso e
+ * persistente: a cada Select o reset trava de novo B19/B29/B54 (Nightmare) e B51 (Crazy) e
+ * esconde B58; as regras destravam conforme o resultado do(s) estagio(s) anterior(es).
+ *   g_lockRt  = copia de lock[] da tabela (+0x3C..+0x40) com o reset aplicado
+ *   g_shownRt = oculta liberada nesta Select (B58, +0x34/+0x35) */
+static uint8_t g_lockRt[EX_SONG_COUNT][5];
+static bool    g_shownRt[EX_SONG_COUNT];
 
 static const uint8_t k_code6[6] = { 1, 2, 1, 2, 1, 2 };                  /* 0x455140 */
 static const uint8_t k_code5[2][5] = {                                   /* 0x455148 */
@@ -412,6 +431,63 @@ static int findSong(int id) {
     return -1;
 }
 
+static int findSong(int id);
+/* piu 0x8062FF0: reset de visibilidade/trava */
+static void resetSecrets(void) {
+    for (int i = 0; i < EX_SONG_COUNT; i++) {
+        for (int k = 0; k < 5; k++) g_lockRt[i][k] = g_exSongs[i].lock[k];
+        g_shownRt[i] = false;
+    }
+    int s;
+    if ((s = findSong(0xB19)) >= 0) g_lockRt[s][4] = 1;   /* CANON-D Nightmare */
+    if ((s = findSong(0xB29)) >= 0) g_lockRt[s][4] = 1;   /* BANYA CLASSIC REMIX Nightmare */
+    if ((s = findSong(0xB51)) >= 0) g_lockRt[s][2] = 1;   /* DIGNITY FULL REMIX Crazy */
+    if ((s = findSong(0xB54)) >= 0) g_lockRt[s][4] = 1;   /* 2ND HIDDEN REMIX Nightmare */
+}
+
+/* piu 0x806307E: regras de liberacao, avaliadas na entrada da Select. Os dados do estagio
+ * anterior vem de result.c. Devolve o canal/musica para onde o cursor pula (-1 = nenhum). */
+static void evalSecrets(int* jumpCh, int* jumpId) {
+    int done = 3 - g_game.stageCount;          /* [0x80BECD8]: estagios ja jogados */
+    if (g_game.isBonusSong) done = 3;
+    unsigned mask = g_game.activePlayerMask ? g_game.activePlayerMask : g_joined;
+    int s;
+    *jumpCh = -1; *jumpId = 0;
+    for (int p = 0; p < 2; p++) {
+        if (!(mask & (1u << p))) continue;
+        /* ARCADE, 4a Select: I'll give you all my love (B13) em Crazy no 3o estagio, MISS <= 10 */
+        if (done > 2 && g_exStation == 0 && Result_ExStageSong(2) == 0xB13 &&
+            Result_ExStageCrazy(2) && Result_ExStageMiss(p, 2) <= 10) {
+            if ((s = findSong(0xB19)) >= 0) {
+                g_lockRt[s][4] = 0; *jumpCh = 0; *jumpId = 0xB19;
+                Log_Print("EXSECRET: B19 CANON-D Nightmare liberada (P%d)\n", p + 1);
+            }
+        }
+        if (done != 1 || g_exStation != 1) continue;
+        int prev = Result_ExStageSong(0);
+        bool good = Result_ExStageRatio(p, 0) >= 1.0f && Result_ExStageGreat(p, 0) <= 20 &&
+                    Result_ExStageMiss(p, 0) == 0;
+        if (prev == 0xB31 && good && (s = findSong(0xB54)) >= 0) {        /* DIVA'S -> 2ND HIDDEN NM */
+            g_lockRt[s][4] = 0; *jumpCh = 3; *jumpId = 0xB54;
+            Log_Print("EXSECRET: B54 2ND HIDDEN REMIX Nightmare liberada (P%d)\n", p + 1);
+        }
+        if (prev == 0xB30 && good && (s = findSong(0xB29)) >= 0) {        /* DEUX -> BANYA CLASSIC NM */
+            g_lockRt[s][4] = 0; *jumpCh = 3; *jumpId = 0xB29;
+            Log_Print("EXSECRET: B29 BANYA CLASSIC REMIX Nightmare liberada (P%d)\n", p + 1);
+        }
+        if (prev == 0xB29 && good && (s = findSong(0xB51)) >= 0) {        /* BANYA CLASSIC -> DIGNITY Crazy */
+            g_lockRt[s][2] = 0; *jumpCh = 3; *jumpId = 0xB51;
+            Log_Print("EXSECRET: B51 DIGNITY FULL REMIX Crazy liberada (P%d)\n", p + 1);
+        }
+        /* Tream Vook of the war REMIX em Crazy (modo do estagio 0, [0x80BECED] & 2): sem teste de
+         * nota (0x80632D5..0x8063344) */
+        if (prev == 0xB28 && Result_ExStageCrazy(0) && (s = findSong(0xB58)) >= 0) {
+            g_shownRt[s] = true; *jumpCh = 3; *jumpId = 0xB58;
+            Log_Print("EXSECRET: B58 Tream Vook of the war REMIX (A) liberada (P%d)\n", p + 1);
+        }
+    }
+}
+
 /* 0x4192F0: monta a lista visível do canal. Música oculta (+0x35) entra se o
  * P1 ou o P2 tiver o bit 0x2000 (0x419376..0x4193C4). */
 static void buildList(void) {
@@ -424,7 +500,7 @@ static void buildList(void) {
         if (s < 0) continue;
         if (Eeprom2_SongOff(s)) continue;   /* +0x36 <- EEPROM +0x52B (0x412F00) */
         /* B57: com EEPROM +0x525 = 1 deixa de ser oculta (arcade 0x806336E) */
-        bool hid = g_exSongs[s].hidden != 0 && !(g_exCanonUnlocked && id == 0xB57);
+        bool hid = g_exSongs[s].hidden != 0 && !(g_exCanonUnlocked && id == 0xB57) && !g_shownRt[s];
         if (!hid || unlocked)   /* visible = (hidden == 0), 0x416474 */
             g_list[g_listCount++] = id;
     }
@@ -556,6 +632,7 @@ void ExSelect_Enter(void) {
     else         g_flags &= 0xFFFFF00Fu;
     for (int p = 0; p < 2; p++) {
         if (newGame) g_mods[p] = 0;
+        g_mods[p] &= ~(unsigned)EXMOD_UNLOCK;   /* Solitary 2 (B18): a liberacao nao e persistente, vale so numa Select */
         g_joinFrame[p] = 0;
         clearCodeBuffers(p);
     }
@@ -588,9 +665,18 @@ void ExSelect_Enter(void) {
     g_chPrev = g_ch;
     g_chDir = 0;
     g_curDir = 0;
+    resetSecrets();
+    int jch, jid;
+    evalSecrets(&jch, &jid);
+    if (jch >= 0) { g_ch = jch; g_chPrev = jch; }
+    if (jid == 0xB58) playWave(SND_2_1);   /* mesmo som do codigo de comando ativado (ex.: 2x) */
+    buildList();
+    if (jch >= 0) {
+        for (int i = 0; i < g_listCount; i++)
+            if (g_list[i] == jid) { g_cursor[g_ch] = i; break; }
+    }
     for (int c = 0; c < EX_CHANNEL_COUNT; c++)
         g_cursorPrev[c] = g_cursor[c];
-    buildList();
 }
 
 /* 0x417F87 (dir 1) / 0x41803E (dir 2) */
@@ -664,7 +750,7 @@ static void openPanel(void) {
     int rows = g_panel2P ? 3 : 5;
     g_battleDiff = 0;
     for (int m = 0; m < rows; m++)
-        if (g_exSongs[s].level[m] != -1 && g_exSongs[s].lock[m] == 0) {
+        if (g_exSongs[s].level[m] != -1 && g_lockRt[s][m] == 0) {
             g_modeList[g_modeCount++] = m;   /* índice em k_modeBit */
             if (m < 3) g_battleDiff = m;
         }
@@ -741,12 +827,14 @@ static void startGame(void) {
         }
         g_game.selectedDifficulty = 0;
         g_game.activePlayerMask = (int)(g_joined & 3);
+    g_exDemo = false;   /* jogo de verdade: nunca herda a demo */
         g_game.isBattleMode = false;
         for (int p = 0; p < 2; p++) {
             unsigned mm = g_mods[p];
             g_game.cmdSpeedMult[p] = (mm & EXMOD_X8) ? 8 : (mm & EXMOD_X4) ? 4 :
                                      (mm & EXMOD_X3) ? 3 : (mm & EXMOD_X2) ? 2 : 1;
             g_game.cmdRandomVelocity[p] = (mm & EXMOD_RV) != 0;
+            g_exPlayerMods[p] = mm;
         }
         Loading_Enter(id);
         return;
@@ -757,7 +845,7 @@ static void startGame(void) {
     } else {
         int last = ((g_joined & 3) == 3) ? 3 : 5;   /* 2P: só N H C */
         for (int k = 0; k < last; k++)              /* 0x4164FB..0x41673C */
-            if (g_exSongs[s].level[k] != -1 && g_exSongs[s].lock[k] == 0) { m = k; break; }
+            if (g_exSongs[s].level[k] != -1 && g_lockRt[s][k] == 0) { m = k; break; }
     }
     if (m < 0) return;
     g_started = true;
@@ -784,6 +872,7 @@ static void startGame(void) {
     }
     g_game.selectedDifficulty = levelOf(s, m);
     g_game.activePlayerMask = (int)(g_joined & 3);
+    g_exDemo = false;   /* jogo de verdade: nunca herda a demo */
     g_game.isBattleMode = (m == EX_MODE_BATTLE);
     /* Velocidade confirmada pelos ícones (x2/x3/x4/x8); rv entra no mesmo
      * ciclo de velocidade. Os demais (r/m/v/ns, 0x800, 0x1000, X-MODE) ainda
@@ -793,6 +882,7 @@ static void startGame(void) {
         g_game.cmdSpeedMult[p] = (mm & EXMOD_X8) ? 8 : (mm & EXMOD_X4) ? 4 :
                                  (mm & EXMOD_X3) ? 3 : (mm & EXMOD_X2) ? 2 : 1;
         g_game.cmdRandomVelocity[p] = (mm & EXMOD_RV) != 0;
+        g_exPlayerMods[p] = mm;   /* [+0x1D0] do jogador: 0x4000/0x8000 lidos no gameplay */
     }
     Loading_Enter(id);
 }
@@ -826,6 +916,7 @@ bool ExSelect_Run(int id, int m, int demo)
     for (int p = 0; p < 2; p++) {
         g_game.cmdSpeedMult[p] = 1;
         g_game.cmdRandomVelocity[p] = false;
+        g_exPlayerMods[p] = 0u;
     }
     g_exDemo = (demo != 0);
     Log_Print("RUN %X %s%s%s\n", (unsigned)id, k_modeArg[argIdx],
@@ -833,6 +924,29 @@ bool ExSelect_Run(int id, int m, int demo)
               demo == 2 ? " -demo2" : demo ? " -demo" : "");
     Loading_Enter(id);
     return true;
+}
+
+/* RAW - Exceed 2 Opening: arcade `piu` 0x8060F3F empurra "RUN 001 -d" no fim do 2o
+ * estagio do REMIX. Parser do RUN (0x8058539): -d = bit 0x100, secao 5 do STX (Full
+ * Double); com P1 e P2 ativos remove o P2 (0x80585CD). Nao passa pela Select nem pelo
+ * NEXTSTAGE e NAO reinicia o contador de estagio (0x8060F44 grava 2): por isso nao
+ * chama Menu_ResetState. Velocidade/opcoes dos jogadores ficam as da Select. */
+void ExSelect_RunRaw(void)
+{
+    g_game.selectedSongIndex = Song_FindByID(&g_game.songDB, EX_RAW_ID);
+    g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, k_dbModeName[3]);   /* DOUBLE */
+    if (g_game.selectedSongIndex < 0 || g_game.selectedModeIndex < 0) {
+        Log_Print("RAW: songDB sem a 001/DOUBLE (%d/%d) - GAMEOVER\n",
+                  g_game.selectedSongIndex, g_game.selectedModeIndex);
+        Game_ChangeState(STATE_GAMEOVER_ENTER);
+        return;
+    }
+    g_game.selectedDifficulty = 0;
+    if ((g_game.activePlayerMask & 3) == 3) g_game.activePlayerMask = 1;   /* 0x80585CD */
+    g_game.isBattleMode = false;
+    g_exDemo = false;
+    Log_Print("RAW: RUN 001 -d (estagio %d, jogadores 0x%X)\n", 3 - g_game.stageCount, g_game.activePlayerMask);
+    Loading_Enter(EX_RAW_ID);
 }
 
 /* 0x41944C: com crédito, CENTER de quem ainda não entrou -> PUSHPANEL.WAV,

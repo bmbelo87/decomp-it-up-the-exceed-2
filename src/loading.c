@@ -49,6 +49,10 @@ void Loading_Enter(int songId) {
         }
     }
 
+    /* Demo: sem PNZ não há título para mostrar; o RUN -demo carrega direto.
+     * era: 3550 ms de tela preta antes da carga. */
+    if (g_exDemo) g_loadingTimer = 0;
+
     g_game.state = STATE_SONG_TITLE;
     g_game.stateFrame = 0;
     Render_SetGlobalColor(0, 0, 0, 0);
@@ -95,8 +99,12 @@ void Loading_Update(float dt) {
             snprintf(movPath, sizeof(movPath), "%s/BGA/%s.MOV", g_game.currentDirectory, Song_DataIdStr(g_loadingSongId));
             Movie_Close();
             bool useMov = false, movLoop = false;
-            FILE* tf = fopen(bgaPath, "rb");
-            if (tf) {
+            FILE* tf = NULL;
+            /* BATTLE STATION: sem BGA/MOV da música (PIU32 0x4046F8, bit 0x40);
+             * o fundo é só o starfield (testbga.c) */
+            if (g_exStation == 2) {
+                Log_Print("Loading: BATTLE — sem BGA/MOV da música\n");
+            } else if ((tf = fopen(bgaPath, "rb")) != NULL) {
                 fclose(tf);
                 Log_Print("Loading: loading BGA '%s'\n", bgaPath);
                 Resource_LoadBGADirect(bgaPath);
@@ -140,7 +148,8 @@ void Loading_Update(float dt) {
             }
 
             /* Espera ativa como no original (0x4116b5): nada é desenhado. */
-            while (timeGetTime() - g_loadingStartMs < LOADING_MIN_TO_MUSIC_MS)
+            /* Demo: sem o piso de 4 s (aproximação do port para o título) */
+            while (!g_exDemo && timeGetTime() - g_loadingStartMs < LOADING_MIN_TO_MUSIC_MS)
                 Sleep(1);
             if (audOk && !(g_exDemo && !Demo_SoundOn()))   /* 0x40236A */
                 BGM_Play(false);

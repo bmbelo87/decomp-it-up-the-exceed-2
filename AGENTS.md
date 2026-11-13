@@ -868,3 +868,54 @@ e `g_cdLoaded` continuam ativos.
 - Bits de opção do jogador `0x4000`/`0x8000` (Decel/Accel da Select) usam as mesmas curvas do Accel (não ligados no port).
 - `[+0x19AD8]` do OnTick tratado como ms da música; ordem exata do OnTick em relação às setas.
 - Mine Layer só altera os itens já extraídos (não as variantes das outras páginas/níveis).
+
+## Exceed2 — música secreta 001 no REMIX STATION (12/11/2026)
+
+Origem: relato do usuário no jogo original (REMIX, duas músicas no Crazy, 0 MISS nas duas → surge uma 3ª música, a mesma da abertura). Verificado no `piu` (ELF do arcade, `game\piu`); **não existe no PIU32.EXE**. O REA/Ghidra não abre ELF no Windows: análise feita com `objdump -d -M intel` (VMA = offset + `0x8048000`).
+
+### Fatos (confirmados no assembly do `piu`)
+
+- Rotina de decisão de estágio pós-grade: `0x8060DC8..0x80610AC`. Variáveis: estágio `[0x80BECD8]`, estação `[0x80BED0C]`
+  (0 ARCADE, 1 REMIX, 2 BATTLE; escrita em `0x806E5F2..0x806E60A`), máscara de jogadores `[0x80BECD4]` (bit 0 = P1, bit 1 = P2).
+- Único ponto que dispara a música: `0x8060F3F` (`push 0x807B119` = `"RUN 001 -d"`, flag 1). É a **única** referência à string em todo o binário.
+- Entrada do caso: estágio 1 (`0x8060E79`) com estação 1 ou 2 (`0x8060E7E..0x8060E86`). BATTLE nunca chega ao estágio 1 (uma música por partida), logo na prática só REMIX.
+- Condição, avaliada por jogador ativo (OR entre P1 e P2; `0x8060E9D..0x8060F2C`):
+  1. razão do estágio 0 `[+0x170] >= 1.0` (`fld1`/`fucomip`/`jb`, `0x8060EA0..0x8060EAA`);
+  2. razão do estágio 1 `[+0x174] >= 1.0`;
+  3. `[+0x1C0] == 0` e `[+0x1C4] == 0` (campo `+0x28` por estágio; MISS é provável);
+  4. `[0x80BECED] & 2` e `[0x80BECF1] & 2` → bit `0x200` do modo dos estágios 0 e 1 = **CRAZY**.
+- Se passar: `[0x80BECD8] = 2` e `RUN 001 -d` direto (sem Select e sem NEXTSTAGE). Se falhar: `GAMEOVER` (`0x807A14D`, `0x8060FED`).
+- No fim da 001 (estágio 2, REMIX): `0x8060F5D` → `GAMEOVER`.
+- **A 001 nunca dá Stage Break**: `0x805A242..0x805A254` compara o 2º token do comando (step id) com `"001"` (`0x807A20D`) e pula a checagem de `STAGEBREAK` (`0x805A31E`). A isenção é por nome no código, **não** está no `001.STX` (comparado com 150 STX). Break normal: vida `GetLifeGaugeMeter <= 0` ou `[+0x168] > 50` (51 misses **consecutivos**). Detalhes em `RAW_Exceed2_Opening.md` §2.6.
+- Códigos de modo do RUN (parser `0x8058480..0x80586A5`; bit em `[0x80BECD4]` / seção do STX em `[ebx+0x4477C]`): `-n 0x10`/seção 1, `-h 0x20`/2, `-nm 0x400`/3, **`-c 0x200`/4**, **`-d 0x100`/5 (Full Double)**, `-dv 0x80`/7; `-hd` não tem bit ("not implemented", volta a IDLE).
+  Ordem das seções do STX: 0 Practice, 1 Normal, 2 Hard, 3 Nightmare, 4 Crazy, 5 Full Double, 6 Half Double, 7 Division, 8 Lightmap.
+  Atenção: **no arcade 0x200 = Crazy e 0x100 = Full Double**; no PIU32/Exceed a tabela da Select usa 0x200 = Freestyle. Não misturar.
+- Os offsets por estágio seguem a mesma disposição do PIU32: razão `+0x170 + 4·estágio`, `+0x180`, `+0x190`, `+0x1A0`, `+0x1B0`, `+0x1C0` (gravados no fim de cada estágio; no PIU32 em `0x40A824..0x40A90E`).
+- Constantes: `fld1` (1.0); no PIU32 `0x452040 = 1.0f`, `0x45216C = 0.95f`, `0x452164 = 0.75f`.
+
+### Arquivos da 001 (existem em `game\`)
+
+`STEP.DAT` → `001.STX` (também em `STEP_OUT\`), `AUDIO\001.AUD`, `BGA\001.MOV` (via `BGA\%s.MOV`).
+O `CTitle::Begin` carrega `001.STX` e o `CIntro` carrega `AUDIO\001.AUD`: é a mesma música da abertura.
+`TITLE\T001E.PNZ` / `T001H.PNZ` existem, mas **não** achei ligação com este disparo.
+
+### Hipóteses
+
+- `[+0x1C0]/[+0x1C4]` = MISS por estágio (analogia com o PIU32: `+0x18..+0x28` = P/Gr/Gd/B/M). Provável, não confirmado.
+- A condição é "razão ≥ 1.0 **e** 0 MISS" (os dois testes existem); MISS == 0 sozinho não basta (BAD/GOOD abaixam a razão).
+- O relato do usuário de uma tela "RAW" não tem string correspondente no `piu`; não identificada.
+
+### Em aberto
+
+- O que a 001 faz no resultado/high score (nada especial visto na rotina de decisão).
+- Se há efeito sobre créditos/estágio exibido (`stageCount`) quando a 001 roda como 3ª música.
+- Papel de `T001E/H.PNZ`.
+
+### Falso positivo descartado (PIU32.EXE)
+
+O desbloqueio por slot (`0x412F60` reset, `0x413000` destrava) do PIU32 afeta B54/B29 (`rec+0x44`), B51 (`rec+0x42`) e B19. **Não tem relação com a 001.**
+Fatos dessa rotina: roda na entrada da Select (`0x41398C/0x4139A8`); condição = razão do estágio 0 ≥ 1.0, `[+0x1C0]==0` e `[+0x190] ≤ 70/50/30`.
+
+### Estado no port (12/11/2026)
+
+Não implementado. `exNextState` (`src/result.c`) guarda `g_exStageRatio` por jogador, mas não vi MISS nem modo por estágio guardados; o REMIX no estágio 1 termina em `GAMEOVER`.

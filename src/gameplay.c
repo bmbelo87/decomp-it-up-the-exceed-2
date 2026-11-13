@@ -550,10 +550,12 @@ static float g_skinOffX[5];
 
 static void exLoadSkin(void)
 {
+    /* Arcade (piu 0x8058BB9..0x8058C6A, 0x80C07C8..D8 = DL UL C UR DR).
+     * era (PIU32): SKIN01 { 0, 0, 0, 0, 0 } (0x4044AF) e SKIN02 { 3, 3, 1, -3, -3 } (0x4043C0). */
     static const float k_off[3][5] = {
-        { 2.0f, 1.0f, 0.0f, 0.0f, 0.0f },    /* SKIN00: 0x4044D4 (2, 1, 0, 0, 0) */
-        { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f },    /* SKIN01: 0x4044AF */
-        { 3.0f, 3.0f, 1.0f, -3.0f, -3.0f },  /* SKIN02: 0x4043C0 */
+        { 2.0f, 1.0f, 0.0f, 0.0f, 0.0f },    /* SKIN00 */
+        { 1.0f, 0.0f, 0.0f, 2.0f, 0.0f },    /* SKIN01 (0x80000) */
+        { 3.0f, 3.0f, 1.0f, -1.0f, -1.0f },  /* SKIN02 (0x40000) */
     };
     for (int k = 0; k < 5; k++) g_skinTap[k] = g_skinL1[k] = g_skinL2[k] = g_skinL3[k] = -1;
     unsigned fl = ExSelect_GetFlags();
@@ -701,6 +703,11 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     if (g_exDemo) {                 /* 0x402A67: 0x40B9EC(0) e (5) — autoplay nas duas metades */
         g_autoplay = true;
         for (int a = 0; a < 10; a++) g_autoPanel[a] = true;
+    } else {
+        /* Os painéis ligados pela demo ficavam ligados na próxima música
+         * (autoplay "sozinho" depois do Demo Play, mesmo bug do NX).
+         * era: g_autoPanel só era escrito pela demo e pelas teclas de debug. */
+        for (int a = 0; a < 10; a++) g_autoPanel[a] = g_autoplay;
     }
 
     /* Aplica multiplicador de velocidade do Command — por player. */
@@ -972,11 +979,18 @@ static int g_btFlash[2], g_btWeather[2], g_btDecel[2], g_btAccel[2];
  * com [+0x228]: f = (0.005 - 1/(2.4d + 200)) * 120000; senão f = d.
  * (Os bits de opção 0x4000/0x8000 do original usam as mesmas curvas e não
  * estão ligados aqui.) y0 = receptor; spd = multiplicador de velocidade (d = pixels em x1). */
+/* Arcade (piu 0x805CD99..0x805CDFA, por jogador): cúbica com [+0x254] ou o
+ * bit 0x4000 do jogador ([+0x1D1] & 0x40); senão a outra com [+0x250] ou o
+ * bit 0x8000 ([+0x1D0] & 0x8000). O modo de [0x80BECD4] & 0x540, que testa os
+ * bits dos dois jogadores, não é tratado. */
 static float btWarpY(int p, float y, float y0, float spd)
 {
-    if (p < 0 || p > 1 || spd <= 0.0f || (!g_btAccel[p] && !g_btDecel[p])) return y;
+    if (p < 0 || p > 1 || spd <= 0.0f) return y;
+    bool cubic = g_btAccel[p] || (g_exPlayerMods[p] & 0x4000u);
+    bool curve = g_btDecel[p] || (g_exPlayerMods[p] & 0x8000u);
+    if (!cubic && !curve) return y;
     double d = (y - y0) / spd, f;
-    if (g_btAccel[p]) f = pow(d, 3.0) * 0.000625;
+    if (cubic) f = pow(d, 3.0) * 0.000625;
     else {
         double den = d * 2.4 + 200.0;
         if (den == 0.0) return y;
@@ -1260,6 +1274,7 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
                 g_noteState[player][pan] = 1;
                 g_noteExplodeRow[player][pan] = row;
                 g_noteExplodeFrame[player][pan] = 0;
+                g_glowTimer[player][pan] = 24;   /* faltava: sem ele a seta só sumia, sem glow/spark */
                 if (hdCheck) clearHDPanel(r, pan);
                 else if (dnJdg) clearDNPanel(r, pan);
                 else clearPanel(r, pan, player);
@@ -1554,6 +1569,7 @@ static void processInput(int player)
                 g_noteState[player][panel] = 1;
                 g_noteExplodeRow[player][panel] = hitSpec;
                 g_noteExplodeFrame[player][panel] = 0;
+                g_glowTimer[player][panel] = 24;
                 divApplyBranch(player, hitSpec);
                 continue;
             }
@@ -1883,6 +1899,12 @@ static void processAutoplay(void)
                 if (!g_autoPanel[panel]) continue;
                 uint8_t val = isHD ? getNoteHD(&g_chart->rows[hitRows[i]], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[hitRows[i]], panel) : getPanelValue(&g_chart->rows[hitRows[i]], panel, p));
                 if (!val) continue;
+                /* faltava (como o noteExplode do NXReconstructed): sem isto a
+                 * seta do autoplay só sumia, sem explosão/glow/spark */
+                g_noteState[p][panel] = 1;
+                g_noteExplodeRow[p][panel] = hitRows[i];
+                g_noteExplodeFrame[p][panel] = 0;
+                g_glowTimer[p][panel] = 24;
                 if (isHD) clearHDPanel(&g_chart->rows[hitRows[i]], panel);
                 else if (dnAP) clearDNPanel(&g_chart->rows[hitRows[i]], panel);
                 else clearPanel(&g_chart->rows[hitRows[i]], panel, p);
@@ -2167,8 +2189,13 @@ static void processMisses(void)
     }
 }
 
+/* RAW - Exceed 2 Opening: arcade `piu` 0x805A242..0x805A254 compara o id do step com "001"
+ * e pula toda a checagem de STAGEBREAK (vida zerada e 51 misses seguidos). Nao esta no 001.STX. */
+bool g_exRaw = false;
+
 void Gameplay_Start(int songId)
 {
+    g_exRaw = g_exceedSongIds && songId == EX_RAW_ID;
     g_stageBreakFreezeTimer = -1.0f;
     memset(&g_game.stats, 0, sizeof(g_game.stats));
     memset(s_exPrev, 0, sizeof(s_exPrev));
@@ -2389,7 +2416,7 @@ void Gameplay_Update(float dt)
             if (g_game.activePlayerMask & (1 << p)) g_btFinalHearts[p] = BLua_GetLifeGaugeMeter(p);
 
     /* Demo: 0x402B82 — crédito ou 35 s -> IDLE */
-    if (g_exDemo && (Coin_HasCredit() || g_songTime >= 35.0)) {
+    if (g_exDemo && (Attract_HasCredit() || g_songTime >= 35.0)) {   /* era: Coin_HasCredit() */
         Demo_End();
         return;
     }
@@ -2598,16 +2625,22 @@ void Gameplay_Update(float dt)
         }
     }
 
-    processInput(0);
-    if (g_game.activePlayerMask & 0x2) processInput(1);
-    processPendingRows(0);
-    if (g_game.activePlayerMask & 0x2) processPendingRows(1);
+    /* P1 só com o P1 dentro (HD/DN usam o índice 0 para os dois pads).
+     * era: processInput(0)/processPendingRows(0) sempre — com só o P2 dentro,
+     * o pad do P1 julgava as notas escondidas do lado 1. */
+    bool _dbl = isHDMode() || isDNMode();
+    bool _in0 = (g_game.activePlayerMask & 0x1) || _dbl;
+    bool _in1 = (g_game.activePlayerMask & 0x2) && !_dbl;   /* era: sem o !_dbl */
+    if (_in0) processInput(0);
+    if (_in1) processInput(1);
+    if (_in0) processPendingRows(0);
+    if (_in1) processPendingRows(1);
     processAutoplay();
     processHolds();
     processMisses();
 
     /* Stage Break: 51 miss consecutivos OU lifebar == 0 (se opção ativa) */
-    {
+    if (!g_exRaw) {   /* a RAW (001) nunca da break: piu 0x805A242 */
         bool sbTrigger = false;
         bool twoP = (g_game.activePlayerMask == 0x3);
 
@@ -3453,7 +3486,7 @@ void Gameplay_Render(void)
                             idx  = g_skinL2[arrowIdx];
                             sw   = (float)g_game.sprTiles[idx].srcW;
                             sprH = (float)g_game.sprTiles[idx].srcH;
-                            offX = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
+                            offX = (aw - sw) / 2.0f;   /* era: + g_skinOffX[arrowIdx] (piu: o ajuste da skin só vale no receptor/explosão, 0x80574EB) */
                         }
                         (void)sprH;
                         float bodyAlpha = btWA;
@@ -3529,7 +3562,7 @@ void Gameplay_Render(void)
                 float sw = (float)bt->srcW;
                 if (useSkin) {
                     float aw = (g_fontArrow542 >= 0) ? (float)g_game.sprTiles[g_fontArrow542].srcW : 54.0f;
-                    offXs = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
+                    offXs = (aw - sw) / 2.0f;   /* era: + g_skinOffX[arrowIdx] */
                 }
                 float offX = useSkin ? offXs : (isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx]);
                 int btW = Texture_GetWidth(bt->texId); if (btW <= 0) btW = 256;
@@ -3579,7 +3612,7 @@ void Gameplay_Render(void)
                     idx = g_skinL3[arrowIdx];
                     sw = (float)g_game.sprTiles[idx].srcW;
                     sh = (float)g_game.sprTiles[idx].srcH;
-                    tailSkinDX = (aw - sw) / 2.0f + g_skinOffX[arrowIdx];
+                    tailSkinDX = (aw - sw) / 2.0f;   /* era: + g_skinOffX[arrowIdx] */
                 }
                 float tailAlpha = btWA;
                 if (g_game.cmdVanish[p]) {
@@ -3648,7 +3681,7 @@ void Gameplay_Render(void)
                             if (g_skinTap[arrowIdx] >= 0) {
                                 nt = g_skinTap[arrowIdx] + af;
                                 if (nt >= g_game.sprTileCount) nt = g_skinTap[arrowIdx];
-                                cx += g_skinOffX[arrowIdx];
+                                /* era: cx += g_skinOffX[arrowIdx]; */
                             }
                             float na = btWA;
                             if (g_game.cmdVanish[p]) {
@@ -3702,7 +3735,7 @@ void Gameplay_Render(void)
                         if (sIdx >= g_game.sprTileCount) sIdx = skinBase;
                         float ssw = (float)g_game.sprTiles[sIdx].srcW;
                         float ssh = (float)g_game.sprTiles[sIdx].srcH;
-                        Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f + g_skinOffX[arrowGroup] + XM_DXP(panel, y),
+                        Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f /* era: + g_skinOffX[arrowGroup] */ + XM_DXP(panel, y),
                                           y, ssw, ssh, noteAlpha);
                     } else
                     Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f + XM_DXP(panel, y), y, sw, sh, noteAlpha);
@@ -3731,7 +3764,7 @@ void Gameplay_Render(void)
             if (arrowGroup >= 0 && arrowGroup < 5 && g_skinL1[arrowGroup] >= 0) {
                 int sIdx = g_skinL1[arrowGroup] + arrowAnimFrame();
                 if (sIdx >= g_game.sprTileCount) sIdx = g_skinL1[arrowGroup];
-                Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f + g_skinOffX[arrowGroup] + XM_DXP(panel, y), y,
+                Sprite_DrawTileUV(sIdx, posX[panel] + sw / 2.0f /* era: + g_skinOffX[arrowGroup] */ + XM_DXP(panel, y), y,
                                   (float)g_game.sprTiles[sIdx].srcW, (float)g_game.sprTiles[sIdx].srcH, btWA);
             } else
             Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f + XM_DXP(panel, y), y, sw, sh, btWA);
@@ -4425,8 +4458,25 @@ void Gameplay_Render(void)
             float sw = (float)g_game.sprTiles[aSpr].srcW;
             float sh = (float)g_game.sprTiles[aSpr].srcH;
 
+            /* Exceed2 (piu 0x80574EB..0x80575CD): a seta da explosão é a da skin
+             * (skinN.spr, [+0x3B9E8..]) deslocada pelo ajuste da coluna
+             * (0x80C07C8..0x80C07D8); centro = o da seta ARROW54X, como nas notas.
+             * era: ARROW54X sem ajuste. */
+            int eGrp = isHalfDouble
+                ? ((pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1)
+                : (isDoubleOrNightmare ? (pan % 5) : pan);
+            int eSpr = aSpr;
+            float ew = sw, eh = sh, eCx = expPosX[pan] + sw / 2.0f;
+            if (eGrp >= 0 && eGrp < 5 && g_skinTap[eGrp] >= 0) {
+                eSpr = g_skinTap[eGrp] + af;
+                if (eSpr >= g_game.sprTileCount) eSpr = g_skinTap[eGrp];
+                ew = (float)g_game.sprTiles[eSpr].srcW;
+                eh = (float)g_game.sprTiles[eSpr].srcH;
+                eCx += g_skinOffX[eGrp];
+            }
+
             /* Camada 1: seta colorida */
-            Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, eAlpha);
+            Sprite_DrawTileUV(eSpr, eCx, erY, ew, eh, eAlpha);   /* era: (aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, eAlpha) */
 
             /* Camada 2 + 3: glow em PERFECT/GREAT */
             {
@@ -4441,7 +4491,7 @@ void Gameplay_Render(void)
 
                     /* Camada 2: mesma seta aditiva, uma vez, crescendo */
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw * gsc, sh * gsc, ga);
+                    Sprite_DrawTileUV(eSpr, eCx, erY, ew * gsc, eh * gsc, ga);   /* era: aSpr/sw/sh sem ajuste */
                     /* Antes: 3x sem escala (acumulava branco)
                     Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
                     Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
@@ -4476,23 +4526,26 @@ void Gameplay_Render(void)
                         }
                     }
 
-                    /* Exceed2 0x403681..0x403847: spark.spr aditivo no painel,
-                     * quadro = t/3 enquanto t < 15 (5 quadros de 256x256), com o
-                     * mesmo temporizador da explosão. Centro no painel: o original
-                     * posiciona por Translate (-90 + 49*k, -95) na matriz do
-                     * receptor — aproximado aqui pelo centro da seta. */
-                    if (g_fontSpark >= 0 && ef < 15.0f) {
-                        int sf = (int)ef / 3;
-                        int sCnt = sprTileCount(g_fontSpark);
-                        if (sCnt > 0 && sf < sCnt && g_fontSpark + sf < g_game.sprTileCount) {
-                            int sIdx = g_fontSpark + sf;
-                            float spw = (float)g_game.sprTiles[sIdx].srcW;
-                            float sph = (float)g_game.sprTiles[sIdx].srcH;
-                            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                            Sprite_DrawTileUV(sIdx, expPosX[pan] + sw / 2.0f, erY, spw, sph, 1.0f);
-                        }
-                    }
+                    /* (spark movido para fora do if do glow, abaixo) */
 
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                }
+            }
+
+            /* Exceed2 0x403681..0x403847: spark.spr aditivo no painel,
+             * quadro = t/3 enquanto t < 15 (5 quadros de 256x256), com o
+             * mesmo temporizador da explosão (não depende do glow). Centro no
+             * painel: o original posiciona por Translate (-90 + 49*k, -95) na
+             * matriz do receptor — aproximado aqui pelo centro da seta. */
+            if (g_fontSpark >= 0 && ef < 15.0f) {
+                int sf = (int)ef / 3;
+                int sCnt = sprTileCount(g_fontSpark);
+                if (sCnt > 0 && sf < sCnt && g_fontSpark + sf < g_game.sprTileCount) {
+                    int sIdx = g_fontSpark + sf;
+                    float spw = (float)g_game.sprTiles[sIdx].srcW;
+                    float sph = (float)g_game.sprTiles[sIdx].srcH;
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    Sprite_DrawTileUV(sIdx, expPosX[pan] + sw / 2.0f, erY, spw, sph, 1.0f);
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 }
             }

@@ -99,7 +99,8 @@ void Highscore_Update(float dt) {
     (void)dt;
     if (g_game.stateFrame == 1) Highscore_Enter();
 
-    if (Coin_HasCredit()) {                     /* 0x412B1A / 0x4128C1 */
+    if (Attract_HasCredit()) {                  /* 0x412B1A / 0x4128C1 (era: Coin_HasCredit()) */
+        BGA_SetColor(HS_BGA, 1.0f, 1.0f);
         Game_ChangeState(STATE_CREDIT);
         return;
     }
@@ -112,6 +113,7 @@ void Highscore_Update(float dt) {
         return;
     }
     if (g_t > 0x4EC) {                          /* 0x413037 */
+        BGA_SetColor(HS_BGA, 1.0f, 1.0f);       /* port: não deixa o índice 0 escuro para a próxima tela */
         Attract_Idle();
         return;
     }
@@ -120,6 +122,10 @@ void Highscore_Update(float dt) {
 
 void Highscore_Render(void) {
     if (g_game.bgaPicCount <= 0) return;
+    /* Antes do Highscore_Enter (1º update) g_t/g_phase ainda são da passagem
+     * anterior, já no fade de saída: o BGA_SetColor abaixo apagava o HS.DAT
+     * recém-carregado (fundo preto). */
+    if (g_game.stateFrame < 1) return;
     int t = g_t;
 
     if (g_phase == 0) {
@@ -137,7 +143,10 @@ void Highscore_Render(void) {
         return;
     }
 
-    BGA_DrawSlot(HS_BGA, t % 90 + 0x78, 0);     /* 0x412B42 */
+    /* Exceed2 (piu 0x804FF1F): fundo no quadro (t + 120) % 150.
+     * era (exceed.exe 0x412B42): t % 90 + 120 — os quadros 150..209 não existem
+     * no slot 0 do HS.DAT do Exceed2 e o fundo ficava preto no meio da volta. */
+    BGA_DrawSlot(HS_BGA, (t + 0x78) % 0x96, 0);
 
     float yBase;
     int first;

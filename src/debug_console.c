@@ -307,10 +307,17 @@ static const DCCommand g_dcCommands[] = {
 bool g_drawJudgeRange;              /* CPlayEngine +0x48D4A, começa FALSE (0x4016FB) */
 
 /* Procs registrados em 0x40F880.. (0x410244), na ordem do registro */
+/* era (exceed.exe):
 static const char* const k_exProcs[] = {
     "IDLE", "RWARN", "LOGO", "TITLE", "PLAY", "RUN", "NEXTSTAGE", "GAMEOVER",
     "STAGEBREAK", "GRADE", "SELECT", "NAMEINPUT", "IR", "HIGHSCORE", "SETUP",
     "INTRO", "COKE", NULL
+};
+ * Arcade (piu, registro 0x8061600..0x8061B28): */
+static const char* const k_exProcs[] = {
+    "IDLE", "RWARN", "HELP", "LOGO", "TITLE", "PLAY", "RUN", "NEXTSTAGE", "GAMEOVER",
+    "STAGEBREAK", "GRADE", "SELECT", "NAMEINPUT", "IR", "HIGHSCORE", "SETUP",
+    "INTRO", "PLAYMOVIE", "STATION", "LUAPROC", NULL
 };
 
 /* Encerra o que estiver tocando antes de trocar de proc (o End() do proc atual) */
@@ -373,7 +380,14 @@ static void exSetCurProc(int argc, char argv[][DC_ARG_LEN])
     else if (_stricmp(p, "RWARN") == 0)      Game_ChangeState(STATE_WARNING_INIT);
     else if (_stricmp(p, "LOGO") == 0)       Game_ChangeState(STATE_LOGO_ENTER);
     else if (_stricmp(p, "TITLE") == 0)      Game_ChangeState(STATE_CREDIT);
-    else if (_stricmp(p, "INTRO") == 0)      Game_ChangeState(STATE_INTRO);
+    else if (_stricmp(p, "INTRO") == 0)      Attract_Idle_Intro();
+    else if (_stricmp(p, "PLAYMOVIE") == 0) {
+        /* 0x8050844: "PLAYMOVIE <nome>"; sem nome -> "insufficient parameters!" e IDLE */
+        if (argc < 2) { Debug_PrintString("/%s: insufficient parameters!", p); Attract_Idle(); }
+        else if (!Attract_PlayMovie(argv[1])) { Debug_PrintString("/%s: incorrect parameters!", p); Attract_Idle(); }
+    }
+    else if (_stricmp(p, "STATION") == 0)    Game_ChangeState(STATE_STATION);
+    else if (_stricmp(p, "HELP") == 0)       Help_Enter(argc > 1);   /* "HELP 1" = BATTLE */
     else if (_stricmp(p, "HIGHSCORE") == 0)  Game_ChangeState(STATE_HIGHSCORE);
     else if (_stricmp(p, "SELECT") == 0)     Game_ChangeState(STATE_EXSELECT);
     else if (_stricmp(p, "NAMEINPUT") == 0)  Game_ChangeState(STATE_NAMEINPUT);

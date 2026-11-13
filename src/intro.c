@@ -53,6 +53,7 @@ static bool Demo_Start(void) {
     for (int p = 0; p < 2; p++) {
         g_game.cmdSpeedMult[p] = 1;
         g_game.cmdRandomVelocity[p] = false;
+        g_exPlayerMods[p] = 0u;
     }
     /* Opção da EEPROM: som na demo */
     g_demoSound = (Eeprom2_Data()[0x7F0] != 0);   /* EEPROM +0x7F0 (PIUEXCEED2.INI, eeprom_x2.c) */
@@ -71,8 +72,33 @@ void Demo_End(void) {
     Attract_Idle();
 }
 
+/* INTRO e PLAYMOVIE usam o mesmo estado (STATE_INTRO) */
+static int   g_introKind;           /* 0 = CIntro, 1 = PLAYMOVIE */
+static char  g_pmName[32];          /* PLAYMOVIE <nome> */
+static DWORD g_introStartMs;        /* relógio sem som (0x80756DC) */
+static bool  g_introSound;          /* EEPROM +0x7F0 == 1 */
+static bool  g_titleSound;          /* CTitle [+0x6D] */
+static int   g_titleCount;          /* CTitle [+0x54] */
+static int   g_titleOut;            /* CTitle [+0x5C]: fade de saída (0 = rodando) */
+
+/* Extra do port (GAME STYLE = MODDED), igual ao NXReconstructed: atração em
+ * FREE PLAY / EVENT. No original (piu 0x804EE5A) o crédito vale 99 nesses modos,
+ * então LOGO/vídeos/HIGHSCORE/demo vão direto para o TITLE e o TITLE nunca sai:
+ * a atração não roda. No MODDED com FREE PLAY ela roda; CENTER de qualquer
+ * jogador leva ao TITLE, e o TITLE volta à atração pelo tempo do original
+ * (0xC4D quadros + fade de 60). No VANILLA vale o teste do original. */
+static bool s_attractWantTitle;
+static bool attractFree(void) { return g_game.gameStyleModded && Coin_IsFreePlay(); }
+
+bool Attract_HasCredit(void) {
+    if (!attractFree()) return Coin_HasCredit();
+    if (Input_IsPadHit(0, PAD_C) || Input_IsPadHit(1, PAD_C)) s_attractWantTitle = true;
+    return s_attractWantTitle;
+}
+
+/* era (exceed.exe, % 4):
 void Attract_Idle(void) {
-    Audio_StopAll();            /* 0x4130F9..0x41310F */
+    Audio_StopAll();
     for (int guard = 0; guard < 4; guard++) {
         switch (g_idleCount++ & 3) {
         case 0: Game_ChangeState(STATE_LOGO_ENTER); return;
@@ -81,6 +107,51 @@ void Attract_Idle(void) {
         case 3: if (Demo_Start()) return; break;
         }
     }
+}
+ * Arcade (piu 0x80504D8, tabela 0x807A1B8): [+4] % 6 ->
+ *   0 LOGO, 1 PLAYMOVIE FREEVOLT, 2 INTRO, 3 TITLE, 4 HIGHSCORE, 5 demo. */
+void Attract_Idle(void) {
+    Audio_StopAll();            /* 0x4130F9..0x41310F */
+    if (s_attractWantTitle) {   /* MODDED: CENTER durante a demo (Demo_End cai aqui) */
+        Game_ChangeState(STATE_CREDIT);
+        return;
+    }
+    /* Port (como no NXReconstructed): o passo seguinte vem da tela em que se está.
+     * O boot entra no LOGO e o crédito pula para o TITLE sem passar pelo IDLE, e
+     * o contador ficava atrasado: do TITLE voltava ao LOGO em vez do HIGHSCORE. */
+    if (g_game.state == STATE_LOGO_ENTER)      g_idleCount = 1;   /* -> PLAYMOVIE FREEVOLT */
+    else if (g_game.state == STATE_CREDIT)     g_idleCount = 4;   /* -> HIGHSCORE */
+    else if (g_game.state == STATE_HIGHSCORE)  g_idleCount = 5;   /* -> demo */
+    for (int guard = 0; guard < 6; guard++) {
+        switch (g_idleCount++ % 6) {
+        case 0: Game_ChangeState(STATE_LOGO_ENTER); return;
+        case 1: if (Attract_PlayMovie("FREEVOLT")) return; break;
+        case 2: g_introKind = 0; Game_ChangeState(STATE_INTRO); return;
+        case 3: Game_ChangeState(STATE_CREDIT);     return;
+        case 4: Game_ChangeState(STATE_HIGHSCORE);  return;
+        case 5: if (Demo_Start()) return; break;
+        }
+    }
+}
+
+void Attract_Idle_Intro(void) { g_introKind = 0; Game_ChangeState(STATE_INTRO); }
+
+/* PLAYMOVIE <nome> (arcade 0x8050844): exige BGA\<nome>.MOV e AUDIO\<nome>.AUD;
+ * senão "/%s: incorrect parameters!" e IDLE. (O caso STAFF, com BGA\STAFF.DAT
+ * por cima, só é chamado pelo console e não foi reproduzido.) */
+bool Attract_PlayMovie(const char* name) {
+    char mov[MAX_PATH], aud[MAX_PATH];
+    FILE* f;
+    snprintf(mov, sizeof(mov), "%s/BGA/%s.MOV", g_game.currentDirectory, name);
+    snprintf(aud, sizeof(aud), "%s/AUDIO/%s.AUD", g_game.currentDirectory, name);
+    if (!(f = fopen(mov, "rb"))) { Log_Print("/PLAYMOVIE: incorrect parameters! (%s)\n", mov); return false; }
+    fclose(f);
+    if (!(f = fopen(aud, "rb"))) { Log_Print("/PLAYMOVIE: incorrect parameters! (%s)\n", aud); return false; }
+    fclose(f);
+    snprintf(g_pmName, sizeof(g_pmName), "%s", name);
+    g_introKind = 1;
+    Game_ChangeState(STATE_INTRO);
+    return true;
 }
 
 /* [0x568FF4] bits 0/1: quem entrou no CREDIT (lido pela Select) */
@@ -97,19 +168,49 @@ void Gamestate_UpdateIntro(float dt) {
     switch (g_game.state) {
     case STATE_INTRO:
         if (g_game.stateFrame == 1) {
-            char aud[MAX_PATH];
-            snprintf(aud, sizeof(aud), "%s/AUDIO/001.AUD", g_game.currentDirectory);
-            intro_open("BGA/INTRO.MOV", false);
+            /* arcade CIntro 0x80505C8 / PLAYMOVIE 0x8050844: o som só toca com
+             * DEMO SOUND (+0x7F0 == 1). era: sempre tocava. */
+            char aud[MAX_PATH], mov[MAX_PATH];
+            if (g_introKind == 1) {
+                snprintf(aud, sizeof(aud), "%s/AUDIO/%s.AUD", g_game.currentDirectory, g_pmName);
+                snprintf(mov, sizeof(mov), "BGA/%s.MOV", g_pmName);
+            } else {
+                snprintf(aud, sizeof(aud), "%s/AUDIO/001.AUD", g_game.currentDirectory);
+                snprintf(mov, sizeof(mov), "BGA/INTRO.MOV");
+            }
+            intro_open(mov, false);
             BGM_Stop();
-            if (BGM_LoadAUDDirect(aud)) BGM_Play(false);
+            g_introSound = (Eeprom2_Data()[0x7F0] == 1);
+            if (g_introSound && BGM_LoadAUDDirect(aud)) BGM_Play(false);
+            g_introStartMs = timeGetTime();
         }
         Movie_Update(dt);
-        /* 0x4132F0: com crédito vai para TITLE */
-        if (Coin_HasCredit()) {
+        /* 0x8050716 / 0x8050A70: com crédito vai para TITLE (era: Coin_HasCredit()) */
+        if (Attract_HasCredit()) {
             Movie_Close();
+            BGM_Stop();
             Game_ChangeState(STATE_CREDIT);
             break;
         }
+        if (g_game.stateFrame > 1) {
+            /* tempo = posição do som com DEMO SOUND, senão relógio (0x807554C / 0x80756DC) */
+            uint32_t ms = g_introSound ? BGM_GetPositionMs() : (uint32_t)(timeGetTime() - g_introStartMs);
+            bool sndEnd = g_introSound && BGM_HasEnded();
+            bool done;
+            if (g_introKind == 1)   /* PLAYMOVIE: fim do vídeo ou do som */
+                done = Movie_HasEnded() || !Movie_IsOpen() || sndEnd;
+            else                    /* INTRO: 43000 ms (0xA7F7) ou fim do som */
+                done = ms > 0xA7F7 || sndEnd;
+            if (done) {
+                Log_Print("INTRO: fim (tipo %d, %u ms)\n", g_introKind, ms);
+                Movie_Close();
+                BGM_Stop();
+                Attract_Idle();
+            }
+        }
+        break;
+#if 0   /* fim do INTRO pelo vídeo (antes do arcade) */
+        {
         /* Hipótese antiga (CENTER pulava o INTRO), não existe no original:
         if (g_game.stateFrame > 1 &&
             (Movie_HasEnded() || !Movie_IsOpen() ||
@@ -121,7 +222,8 @@ void Gamestate_UpdateIntro(float dt) {
             /* Game_ChangeState(STATE_CREDIT); */
             Attract_Idle();     /* fim do vídeo -> IDLE (0x413394) */
         }
-        break;
+        }
+#endif
     case STATE_CREDIT:
         if (g_game.stateFrame == 1) {
             /* CTitle::Begin (0x41C05A): 0x426570("AUDIO\TITLE.AUD") e depois
@@ -129,12 +231,52 @@ void Gamestate_UpdateIntro(float dt) {
             char aud[MAX_PATH];
             snprintf(aud, sizeof(aud), "%s/AUDIO/TITLE.AUD", g_game.currentDirectory);
             BGM_Stop();
-            if (BGM_LoadAUDDirect(aud)) BGM_Play(true); /* loop do BGM: hipótese */
+            /* arcade 0x807201F: o TITLE.AUD só toca com DEMO SOUND ou com crédito
+             * ([+0x6D]); no fim do som ele recomeça (0x8072269).
+             * era: if (BGM_LoadAUDDirect(aud)) BGM_Play(true); */
+            if (BGM_LoadAUDDirect(aud)) {
+                g_titleSound = (Eeprom2_Data()[0x7F0] != 0) || Coin_HasCredit();
+                if (g_titleSound) BGM_Play(true);
+            }
             intro_open("CREDIT.MOV", true);
             g_titleJoined = 0;
             g_titleFade = 0;
+            g_titleCount = 0;
+            g_titleOut = 0;
+            s_attractWantTitle = false;   /* MODDED: chegou ao TITLE */
         }
         Movie_Update(dt);
+        if (!g_titleSound && Coin_HasCredit()) {   /* 0x807227C */
+            g_titleSound = true;
+            BGM_Play(true);
+        }
+
+        /* arcade 0x80722A2..0x80722D7: sem ninguém dentro e sem crédito, depois
+         * de 3149 quadros (0xC4D) sai; 0x8072394: fade preto de 60 quadros
+         * (alpha = n/60) e IDLE. Crédito durante o fade volta a rodar. */
+        /* MODDED + FREE PLAY: o crédito "eterno" não segura o TITLE */
+        bool titleNoCredit = attractFree() || !Coin_HasCredit();
+        if (g_titleOut > 0) {
+            if (!titleNoCredit) {   /* era: if (Coin_HasCredit()) */
+                g_titleOut = 0;
+                g_titleFade = 0;
+            } else if (g_titleOut > 0x3B) {
+                Movie_Close();
+                BGM_Stop();
+                Attract_Idle();
+                return;
+            } else {
+                g_titleOut++;
+                g_titleFade = g_titleOut;
+                break;
+            }
+        }
+        g_titleCount++;   /* [+0x54], +1 por quadro */
+        if (!(g_titleJoined & 3) && titleNoCredit && g_titleCount > 0xC4D) {   /* era: !Coin_HasCredit() */
+            g_titleOut = 1;
+            g_titleFade = 1;
+            break;
+        }
 
         /* 0x41C192..0x41C1C8 / 0x41C594 / 0x41C5EC: com crédito, CENTER do
          * P1 (bit 0x4 de [0x568FE8]) ou do P2 (bit 0x400) entra o jogador:

@@ -147,6 +147,20 @@ void Eeprom2_CountPlay(int i) {
     Eeprom2_Save();
 }
 
+/* Arcade piu 0x8069BBC (SETUP > BOOKKEEPING > RESET RANKING): 0x80503B4(k, valor, nome)
+ * grava as 20 posições com os nomes da equipe, 10000..500. */
+void Eeprom2_ResetRanking(void) {
+    static const char* const k_names[20] = {
+        "MKII", "YAHP", "KANN", "ZINY", "PIAH", "AHN ", "PIYO", "HIKO", "HALO", "BAJI",
+        "YUTE", "SS  ", "SIHO", "AZKI", "JUNE", "GOON", "ARI*", "TAMA", "YSMA", "PIU "
+    };
+    Eeprom2_Load();
+    for (int k = 0; k < 20; k++) {
+        put32(X2E_RANK_SCORE + 4 * k, (uint32_t)(10000 - 500 * k));
+        memcpy(&g_x2e[X2E_RANK_NAME + 4 * k], k_names[k], 4);
+    }
+}
+
 /* Arcade piu 0x8063743 / 0x806336E: +0x525 == 1 libera a B57. No PIU32 o byte
  * +0x525 é o mais alto do u32 +0x522 (0x4191EB); usado aqui como no arcade. */
 bool Eeprom2_CanonUnlocked(void) { Eeprom2_Load(); return g_x2e[0x525] == 1; }

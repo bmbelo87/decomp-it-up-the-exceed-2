@@ -45,6 +45,17 @@
  *      que faz o papel da EEPROM do gabinete.
  *   3. Textos coreanos foram omitidos. ServiceMenu_Enter força g_nLanguage = 1
  *      (inglês) no original, então os ramos coreanos são inalcançáveis na prática.
+ *
+ * Exceed2 — CSetup do arcade (piu, setup.cpp, vtable 0x807D830, Run 0x80699AE):
+ *   páginas [+0x20]: 0 menu 0x8067FA4, 1 I/O 0x8068100, 2 SCREEN 0x80683F0,
+ *   3 GAME 0x806857C, 4 COIN 0x8068AB2, 5 SOUND 0x8068D3E, 6 BOOKKEEPING 0x8069160,
+ *   7 STATISTICS 0x80692EA, 8 RESTRICTION 0x80694DE, 9 EXIT, 10 CLEAR BOOKKEEPING
+ *   0x8069044, 11 CLEAR RANKING 0x8068F54; rodapé 0x8069768.
+ *   As opções ficam direto na imagem da EEPROM (PIUEXCEED2.INI, eeprom_x2.c).
+ *   Mantidos do port: EEPROM TEST, GRAPHICS SETTINGS, BUTTON CONFIG e o SCREEN TEST
+ *   do Prex3 (o do arcade ainda não foi reconstruído). No PC não há dispenser de
+ *   tickets nem lâmpadas: os contadores de ticket aparecem sem incrementar e o
+ *   teste de lâmpadas do I/O TEST não é feito.
  */
 
 #include "pumpy.h"
@@ -87,10 +98,19 @@ static const float SVC_PALETTE[7][3] = {
  *   g_svcAudioIdx  <- DAT_004422d4 (init -1)
  *   g_svcSeIdx     <- DAT_004422d0 (init -1)
  */
-/* GRAPHICS SETTINGS / BUTTON CONFIG: 11 itens no SETUP MENU; páginas 11 e 12. */
-#define SVC_MAIN_COUNT 11
+/* GRAPHICS SETTINGS / BUTTON CONFIG: páginas 11 e 12 (extras do port).
+ * RESTRICTION e CLEAR RANKING (arcade, páginas 8 e 11 do CSetup): 13 e 14.
+ * era: #define SVC_MAIN_COUNT 11 */
+#define SVC_MAIN_COUNT 12
 #define SVC_PAGE_GRAPHICS 11
 #define SVC_PAGE_BUTTON_CONFIG 12
+#define SVC_PAGE_RESTRICTION 13
+#define SVC_PAGE_CLEAR_RANKING 14
+static int  g_svcLockOk, g_svcLockErr, g_svcLockFrame;   /* [+0x18], [+0x1C], 0x80C5CC0 */
+static int  g_svcSndTimer;                               /* [+0x34] */
+static float g_svcCubeA[3] = { 46.0f, -33.0f, -30.0f };  /* SCREEN TEST [+0x28..+0x30] */
+static bool  g_svcCubeSpin;                              /* [+0x24] */
+static int  g_svcStatOrder[EX_SONG_COUNT];               /* [+0x40 + 4i] */
 static int  g_svcPage;
 static int  g_svcOption;
 static int  g_svcCursor;
@@ -218,7 +238,39 @@ static void svcRenderEEPROMOverlay(void)
     glShadeModel(GL_FLAT);
 }
 
-/* -------------------------------------- ServiceMenu_RenderFooter 0x004051e0 */
+/* -------------------------------------- CSetup rodapé (arcade 0x8069768)
+ * Três linhas à esquerda e as dicas por página (tabela 0x807D634, x = 236). */
+static void svcRenderFooter(void)
+{
+    svcColor(SVC_NORMAL);
+    svcText(0.0f, 32.0f, "PUMP IT UP - THE EXCEED 2");
+    svcText(0.0f, 16.0f, "(BUILD:Dec  7 2004)");
+    svcText(0.0f,  0.0f, "1999-2004 ANDAMIRO CO., LTD.");
+
+    switch (g_svcPage) {
+    case 0: case 4: case 5: case 6: case 7: case 10: case SVC_PAGE_CLEAR_RANKING:
+    case SVC_PAGE_GRAPHICS: case SVC_PAGE_BUTTON_CONFIG:
+        svcText(236.0f, 36.0f, "MOVE   - TEST    BUTTON");
+        svcText(236.0f, 16.0f, "SELECT - SERVICE BUTTON");
+        break;
+    case 1: case 3:
+        svcText(236.0f, 16.0f, "EXIT   - SERVICE BUTTON");
+        break;
+    case 8:
+        svcText(236.0f, 36.0f, "MOVE PAGE - TEST    BUTTON");
+        svcText(236.0f, 16.0f, "EXIT      - SERVICE BUTTON");
+        break;
+    case SVC_PAGE_RESTRICTION:
+        svcText(236.0f, 56.0f, "BOTH CENTER BUTTON - MOVE CURSOR TO MENU");
+        svcText(236.0f, 36.0f, "MOVE   - TEST    BUTTON");
+        svcText(236.0f, 16.0f, "SELECT - SERVICE BUTTON");
+        break;
+    default:
+        break;   /* EEPROM TEST (port) e EXIT: sem dicas */
+    }
+}
+
+#if 0  /* Prex3 (PUMPY.EXE 0x004051e0) — substituído pelo rodapé do arcade acima */
 static void svcRenderFooter(void)
 {
     char buf[64];
@@ -244,6 +296,7 @@ static void svcRenderFooter(void)
         break;   /* página 2 (EEPROM TEST) não desenha rodapé de botões */
     }
 }
+#endif
 
 /* ---------------------------------------- ServiceMenu_RenderMain 0x004052e0 */
 /* static const char* SVC_MAIN_ITEMS[9] = {
@@ -252,14 +305,54 @@ static void svcRenderFooter(void)
 }; */
 /* "BOOKEEPING" com um K só — typo presente no binário original, preservado.
  * "GRAPHICS SETTINGS" (página 11) e "BUTTON CONFIG" (página 12) são extras deste port. */
+/* era (Prex3 + extras do port):
 static const char* SVC_MAIN_ITEMS[SVC_MAIN_COUNT] = {
     "I/O TEST", "EEPROM TEST", "SCREEN TEST", "GAME OPTION", "COIN OPTION",
     "SOUND TEST", "BOOKEEPING", "STATISTICS", "GRAPHICS SETTINGS", "BUTTON CONFIG", "EXIT"
 };
+ * Arcade (tabela 0x807D31C): I/O TEST, SCREEN TEST, GAME OPTION, COIN OPTION,
+ * SOUND TEST, BOOKEEPING, STATISTICS, RESTRICTION, EXIT. */
+static const char* SVC_MAIN_ITEMS[SVC_MAIN_COUNT] = {
+    "I/O TEST", "EEPROM TEST", "SCREEN TEST", "GAME OPTION", "COIN OPTION",
+    "SOUND TEST", "BOOKEEPING", "STATISTICS", "RESTRICTION",
+    "GRAPHICS SETTINGS", "BUTTON CONFIG", "EXIT"
+};
 
+static uint16_t svcPlayCount(int i)
+{
+    const uint8_t* x = Eeprom2_Data();
+    return (uint16_t)(x[0x633 + 2 * i] | (x[0x633 + 2 * i + 1] << 8));
+}
+
+/* Nome da música i (tabela 0x80890F0: +0 coreano, +4 inglês). O menu fica em inglês. */
+static const char* svcSongName(int i)
+{
+    if (i < 0 || i >= EX_SONG_COUNT) return "";
+    if (g_exSongs[i].titleEn && g_exSongs[i].titleEn[0]) return g_exSongs[i].titleEn;
+    return g_exSongs[i].titleKr ? g_exSongs[i].titleKr : "";
+}
+
+/* 0x8068ED8: contagem 0xFFFF vira 0; ordena por jogos, decrescente (troca se menor) */
+static void svcStatSort(void)
+{
+    uint8_t* x = Eeprom2_Data();
+    int n = EX_SONG_COUNT;
+    for (int i = 0; i < n; i++) {
+        g_svcStatOrder[i] = i;
+        if (svcPlayCount(i) == 0xFFFF) { x[0x633 + 2 * i] = 0; x[0x633 + 2 * i + 1] = 0; }
+    }
+    for (int i = 0; i < n; i++)
+        for (int j = i; j < n; j++)
+            if (svcPlayCount(g_svcStatOrder[i]) < svcPlayCount(g_svcStatOrder[j])) {
+                int t = g_svcStatOrder[i]; g_svcStatOrder[i] = g_svcStatOrder[j]; g_svcStatOrder[j] = t;
+            }
+}
+
+/* arcade 0x8067FA4 */
 static void svcRenderMain(void)
 {
     int i;
+    char buf[64];
     uint32_t hit = svcBitsHit();
 
     svcColor(SVC_NORMAL);
@@ -271,22 +364,74 @@ static void svcRenderMain(void)
         svcText(276.0f, (float)(352 - i * 20), SVC_MAIN_ITEMS[i]);
     }
 
+    /* 0x8068038: a cada 60 quadros testa a chave (0x8062CB8). No PC não há
+     * chave; conta sempre OK. O arcade desenha em y=152 (9 itens); aqui os 12
+     * itens descem até 132, então a linha fica em 112. */
+    if (g_svcLockFrame++ % 60 == 0) g_svcLockOk++;
+    svcColor(SVC_NORMAL);
+    sprintf(buf, "Lock OK = %d Err = %d", g_svcLockOk, g_svcLockErr);
+    svcText(276.0f, 112.0f, buf);
+
     if (hit & SVC_BIT_TEST) {
         g_svcOption++;
         if (g_svcOption > SVC_MAIN_COUNT - 1) g_svcOption = 0;
     }
     if (hit & SVC_BIT_SERVICE) {
-        /* 0..7 -> páginas 1..8 (original); 8 -> GRAPHICS (11); 9 -> BUTTON CONFIG (12); 10 -> EXIT (9) */
-        if (g_svcOption == 8)      g_svcPage = SVC_PAGE_GRAPHICS;
-        else if (g_svcOption == 9) g_svcPage = SVC_PAGE_BUTTON_CONFIG;
-        else if (g_svcOption == 10) g_svcPage = 9;
-        else                       g_svcPage = g_svcOption + 1;
+        /* 0..7 -> páginas 1..8; 8 -> RESTRICTION (13); 9 -> GRAPHICS (11);
+         * 10 -> BUTTON CONFIG (12); 11 -> EXIT (9) */
+        if (g_svcOption == 8)       g_svcPage = SVC_PAGE_RESTRICTION;
+        else if (g_svcOption == 9)  g_svcPage = SVC_PAGE_GRAPHICS;
+        else if (g_svcOption == 10) g_svcPage = SVC_PAGE_BUTTON_CONFIG;
+        else if (g_svcOption == 11) g_svcPage = 9;
+        else                        g_svcPage = g_svcOption + 1;
         g_svcCursor     = 0;
         g_svcEepromDone = 0;
+        g_svcSndTimer   = 0;                     /* [+0x34] = 0 */
+        g_svcCubeSpin   = false;                 /* 0x80680D6: [+0x24] = 0, ângulos 46/-33/-30 */
+        g_svcCubeA[0] = 46.0f; g_svcCubeA[1] = -33.0f; g_svcCubeA[2] = -30.0f;
+        if (g_svcPage == 8) svcStatSort();       /* 0x80680CF: STATISTICS */
     }
+}
 
-    svcColor(SVC_NORMAL);
-    svcText(276.0f, 125.0f, "Lock OK = 0 Err = 0");
+/* 0x8075EFA: retângulo (x, y, w, h) sem textura */
+static void svcRect(float x, float y, float w, float h)
+{
+    glBegin(GL_QUADS);
+    glVertex2f(x, y);     glVertex2f(x + w, y);
+    glVertex2f(x + w, y + h); glVertex2f(x, y + h);
+    glEnd();
+}
+
+/* 0x8067D90: painel de 80x80 com os 4 sensores (bits 1..8) em amarelo/preto.
+ * No PC o painel inteiro acende junto (sem sensores separados). */
+static void svcDrawPanel(float x, float y, int bits)
+{
+    static const float YELLOW[3] = { 1.0f, 1.0f, 0.0f };   /* 0x808D74C */
+    static const float BLACK[3]  = { 0.0f, 0.0f, 0.0f };   /* 0x808D794 */
+    glPushMatrix();
+    glTranslatef(x, y, 0.0f);
+    glColor3fv((bits & 1) ? YELLOW : BLACK); svcRect(10.0f, 70.0f, 60.0f, 10.0f);
+    glColor3fv((bits & 2) ? YELLOW : BLACK); svcRect(70.0f, 10.0f, 10.0f, 60.0f);
+    glColor3fv((bits & 4) ? YELLOW : BLACK); svcRect( 0.0f, 10.0f, 10.0f, 60.0f);
+    glColor3fv((bits & 8) ? YELLOW : BLACK); svcRect(10.0f,  0.0f, 60.0f, 10.0f);
+    glPopMatrix();
+}
+
+/* 0x8067E8C: fundo (0.4, 0.4, 0.5) de -10..250 e os 5 painéis (Y para cima) */
+static void svcDrawPad(int p, float x, float y)
+{
+    glDisable(GL_TEXTURE_2D);
+    glPushMatrix();
+    glTranslatef(x, y, 0.0f);
+    glColor3f(0.4f, 0.4f, 0.5f);
+    svcRect(-10.0f, -10.0f, 260.0f, 260.0f);
+    svcDrawPanel(  0.0f,   0.0f, Input_IsPadDown(p, PAD_DL) ? 0xF : 0);
+    svcDrawPanel(160.0f,   0.0f, Input_IsPadDown(p, PAD_DR) ? 0xF : 0);
+    svcDrawPanel( 80.0f,  80.0f, Input_IsPadDown(p, PAD_C)  ? 0xF : 0);
+    svcDrawPanel(  0.0f, 160.0f, Input_IsPadDown(p, PAD_UL) ? 0xF : 0);
+    svcDrawPanel(160.0f, 160.0f, Input_IsPadDown(p, PAD_UR) ? 0xF : 0);
+    glPopMatrix();
+    glEnable(GL_TEXTURE_2D);
 }
 
 /* -------------------------------------- ServiceMenu_RenderIOTest 0x004054c0 */
@@ -313,6 +458,10 @@ static void svcRenderIOTest(void)
         sprintf(buf, "%s : %s", lines[i].label, on ? "ON" : "OFF");
         svcText(260.0f, lines[i].y, buf);
     }
+
+    /* arcade 0x80683B6 -> 0x8067F5E: os dois tapetes em (60, 80) e (340, 80) */
+    svcDrawPad(0, 60.0f, 80.0f);
+    svcDrawPad(1, 340.0f, 80.0f);
 
     if (hit & SVC_BIT_SERVICE) g_svcPage = 0;
 }
@@ -366,6 +515,36 @@ static void svcRenderEEPROMTest(void)
 }
 
 /* ---------------------------------- ServiceMenu_RenderScreenTest 0x00405840 */
+/* arcade 0x8076326: cubo de cores, meia-aresta s, 6 GL_QUADS com cor por vértice */
+static void svcDrawColorCube(float s)
+{
+    static const float R[3] = {1,0,0}, Y[3] = {1,1,0}, G[3] = {0,1,0}, C[3] = {0,1,1},
+                       B[3] = {0,0,1}, M[3] = {1,0,1}, W[3] = {1,1,1}, K[3] = {0,0,0};
+    const float m = -s;
+    glShadeModel(GL_SMOOTH);
+    glDisable(GL_TEXTURE_2D);
+    glBegin(GL_QUADS);
+    glColor3fv(G); glVertex3f(s, m, m); glColor3fv(K); glVertex3f(m, m, m);
+    glColor3fv(R); glVertex3f(m, s, m); glColor3fv(Y); glVertex3f(s, s, m);
+    glColor3fv(C); glVertex3f(s, m, s); glColor3fv(G); glVertex3f(s, m, m);
+    glColor3fv(Y); glVertex3f(s, s, m); glColor3fv(W); glVertex3f(s, s, s);
+    glColor3fv(K); glVertex3f(m, m, m); glColor3fv(B); glVertex3f(m, m, s);
+    glColor3fv(M); glVertex3f(m, s, s); glColor3fv(R); glVertex3f(m, s, m);
+    glColor3fv(B); glVertex3f(m, m, s); glColor3fv(C); glVertex3f(s, m, s);
+    glColor3fv(W); glVertex3f(s, s, s); glColor3fv(M); glVertex3f(m, s, s);
+    glColor3fv(C); glVertex3f(s, m, s); glColor3fv(B); glVertex3f(m, m, s);
+    glColor3fv(K); glVertex3f(m, m, m); glColor3fv(G); glVertex3f(s, m, m);
+    glColor3fv(M); glVertex3f(m, s, s); glColor3fv(W); glVertex3f(s, s, s);
+    glColor3fv(Y); glVertex3f(s, s, m); glColor3fv(R); glVertex3f(m, s, m);
+    glEnd();
+    glShadeModel(GL_FLAT);
+}
+
+/* SCREEN TEST do arcade (0x80683F0): grade, título, barras de degradê e o cubo
+ * em (480, 304) girado em Z/Y/X ([+0x30]/[+0x2C]/[+0x28]) com face oculta (CCW).
+ * UL de P1/P2 (0x808) volta os ângulos para 46/-33/-30; CENTER (0x404) liga e
+ * desliga o giro (+0.5/+1.5/+0.2 por quadro). Os avisos em coreano não entram.
+ * Profundidade do ortho para o cubo: -500..500 (hipótese; o do port é -1..1). */
 static void svcRenderScreenTest(void)
 {
     uint32_t hit = svcBitsHit();
@@ -374,9 +553,36 @@ static void svcRenderScreenTest(void)
     svcColor(SVC_NORMAL);
     svcText(276.0f, 432.0f, "SCREEN TEST");
     svcRenderGradientBar();
-    svcRenderEEPROMOverlay();
+    /* era: svcRenderEEPROMOverlay(); (hexágono do Prex3) */
 
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, 640, 0, 480, -500.0, 500.0);
+    glMatrixMode(GL_MODELVIEW);
+    glPushAttrib(GL_ENABLE_BIT | GL_POLYGON_BIT | GL_CURRENT_BIT);
+    glEnable(GL_CULL_FACE);
+    glFrontFace(GL_CCW);
+    glPushMatrix();
+    glTranslatef(480.0f, 304.0f, 0.0f);
+    glRotatef(g_svcCubeA[2], 0, 0, 1);
+    glRotatef(g_svcCubeA[1], 0, 1, 0);
+    glRotatef(g_svcCubeA[0], 1, 0, 0);
+    svcDrawColorCube(66.0f);
+    glPopMatrix();
+    glPopAttrib();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glEnable(GL_TEXTURE_2D);
+    svcColor(SVC_NORMAL);
+
+    if (Input_IsPadHit(0, PAD_UL) || Input_IsPadHit(1, PAD_UL)) {
+        g_svcCubeA[0] = 46.0f; g_svcCubeA[1] = -33.0f; g_svcCubeA[2] = -30.0f;
+    }
+    if (Input_IsPadHit(0, PAD_C) || Input_IsPadHit(1, PAD_C)) g_svcCubeSpin = !g_svcCubeSpin;
     if (hit & SVC_BIT_SERVICE) g_svcPage = 0;
+    if (g_svcCubeSpin) { g_svcCubeA[0] += 0.5f; g_svcCubeA[1] += 1.5f; g_svcCubeA[2] += 0.2f; }
 }
 
 /* ---------------------------------- ServiceMenu_RenderGameOption 0x00405910 */
@@ -398,6 +604,7 @@ static void svcGameOptionReset(void)
     g_game.svcLangOption    = 1;    /* ENGLISH         */
 }
 
+#if 0  /* Prex3 (PUMPY.EXE 0x00405910) — substituída pela do arcade abaixo */
 static void svcRenderGameOption(void)
 {
     char buf[64];
@@ -497,6 +704,131 @@ static void svcRenderGameOption(void)
 
     /* O original força ENGLISH quando LANGUAGE cai em 0 (coreano) */
     if (g_game.svcLangOption == 0) g_game.svcLangOption = 1;
+}
+#endif
+
+/* ---------------------------------- GAME OPTION (arcade 0x806857C)
+ * 11 itens (tabela 0x807D364) em x=196, valores em x=404, verde (0x808D758) no
+ * valor padrão. Bytes da EEPROM: 7EC modo, 7ED LEVEL, 7EE STAGE BREAK, 7EF idioma,
+ * 7F0 DEMO SOUND, 7F1 SHOW HELP, 51B MERCY TICKET, 51C SCORE PER TICKET. */
+/* "GAME STYLE" (índice 8) é extra do port (PUMPY.INI GameStyle): VANILLA = como o
+ * original, MODDED = extras do port. era: 11 itens, sem ele. */
+#define SVC_X2_GAMEOPT_N 12
+static const char* SVC_X2_GAMEOPT_ITEMS[SVC_X2_GAMEOPT_N] = {
+    "GAME MODE", "LEVEL", "STAGE BREAK", "LANGUAGE", "DEMO SOUND", "SHOW HELP",
+    "MERCY TICKET", "SCORE PER TICKET", "GAME STYLE", "DEFAULT SETTING", "SAVE AND EXIT", "EXIT"
+};
+static const char* SVC_X2_LANG_NAMES[4] = { "KOREAN", "ENGLISH", "SPANISH", "CHINESE" };  /* 0x807D3D4 */
+
+/* 0x8069D26 (só as opções de jogo; as de moeda ficam) */
+static void svcX2GameOptionReset(void)
+{
+    uint8_t* x = Eeprom2_Data();
+    g_game.svcGameMode      = 0;
+    g_game.optionDifficulty = 1;
+    g_game.optionToggle1    = 2;
+    g_game.svcDemoSound     = 1;
+    g_game.optionToggle2    = 1;
+    g_game.svcLangOption    = 1;
+    x[0x7EB] = 0;   /* CREDIT LIMIT */
+    x[0x51B] = 0;   /* MERCY TICKET */
+    x[0x51C] = 0;   /* SCORE PER TICKET */
+}
+
+static void svcRenderGameOption(void)
+{
+    char buf[64];
+    int i;
+    uint32_t hit = svcBitsHit();
+    uint8_t* x = Eeprom2_Data();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "GAME OPTION");
+
+    for (i = 0; i < SVC_X2_GAMEOPT_N; i++) {
+        float y = (float)(352 - i * 20);
+        svcColorFor(i, g_svcCursor);
+        svcText(196.0f, y, SVC_X2_GAMEOPT_ITEMS[i]);
+
+        switch (i) {
+        case 0:  /* GAME MODE: NORMAL em verde, senão EVENT */
+            if (g_game.svcGameMode == 0) { svcColor(SVC_SUCCESS); svcText(404.0f, y, "NORMAL"); }
+            else svcText(404.0f, y, "EVENT");
+            break;
+        case 1:
+            if (g_game.optionDifficulty == 1) svcColor(SVC_SUCCESS);
+            svcText(404.0f, y, SVC_LEVEL_NAMES[g_game.optionDifficulty % 3]);
+            break;
+        case 2:  /* 0 = OFF, senão "%d STAGE"; padrão 2 */
+            if (g_game.optionToggle1 == 2) svcColor(SVC_SUCCESS);
+            if (g_game.optionToggle1 != 0) { sprintf(buf, "%d STAGE", g_game.optionToggle1); svcText(404.0f, y, buf); }
+            else svcText(404.0f, y, "OFF");
+            break;
+        case 3:
+            if (g_game.svcLangOption == 1) svcColor(SVC_SUCCESS);
+            svcText(404.0f, y, SVC_X2_LANG_NAMES[g_game.svcLangOption & 3]);
+            break;
+        case 4:  /* tabela {OFF, ON}[valor]; verde quando 1 */
+            if (g_game.svcDemoSound == 1) svcColor(SVC_SUCCESS);
+            svcText(404.0f, y, g_game.svcDemoSound ? "ON" : "OFF");
+            break;
+        case 5:
+            if (g_game.optionToggle2 == 1) svcColor(SVC_SUCCESS);
+            svcText(404.0f, y, g_game.optionToggle2 ? "ON" : "OFF");
+            break;
+        case 6:  /* 0x80687CB: 0 = OFF em verde, senão "%d" */
+            if (x[0x51B] == 0) { svcColor(SVC_SUCCESS); svcText(404.0f, y, "OFF"); }
+            else { sprintf(buf, "%d", x[0x51B]); svcText(404.0f, y, buf); }
+            break;
+        case 7:  /* 0x8068810 */
+            if (x[0x51C] == 0) { svcColor(SVC_SUCCESS); svcText(404.0f, y, "OFF"); }
+            else { sprintf(buf, "%d00000 / Ticket", x[0x51C]); svcText(404.0f, y, buf); }
+            break;
+        case 8:  /* GAME STYLE (extra do port): VANILLA em verde */
+            if (!g_game.gameStyleModded) svcColor(SVC_SUCCESS);
+            svcText(404.0f, y, g_game.gameStyleModded ? "MODDED" : "VANILLA");
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* 0x806884F: sem dispenser ([0x80BED44]+0x30 == 0) — no PC, sempre.
+     * Arcade em y=112; com o GAME STYLE os itens descem até 132, então fica em 100. */
+    svcColor(SVC_NORMAL);
+    svcText(196.0f, 100.0f, "Ticket Dispenser is NOT CONNECTED.");
+    svcColor(SVC_HIGHLIGHT);
+    svcText(356.0f, 100.0f, "NOT CONNECTED");
+
+    if (hit & SVC_BIT_TEST) {
+        g_svcCursor++;
+        if (g_svcCursor > SVC_X2_GAMEOPT_N - 1) g_svcCursor = 0;
+    }
+    if (hit & SVC_BIT_SERVICE) {
+        switch (g_svcCursor) {          /* tabela 0x807D414 */
+        case 0: g_game.svcGameMode = !g_game.svcGameMode; break;
+        case 1: if (++g_game.optionDifficulty > 2) g_game.optionDifficulty = 0; break;
+        case 2: if (++g_game.optionToggle1 > 4)    g_game.optionToggle1 = 0; break;
+        case 3: if (++g_game.svcLangOption > 3)    g_game.svcLangOption = 0; break;
+        case 4: g_game.svcDemoSound  = !g_game.svcDemoSound;  break;
+        case 5: g_game.optionToggle2 = !g_game.optionToggle2; break;
+        case 6: x[0x51B] = (uint8_t)((x[0x51B] + 1) % 11); break;
+        case 7: {   /* tabela 0x807D440: 0..5 -> +1, 5 -> 10, 10..90 -> +10, 100 -> 0 */
+            uint8_t v = x[0x51C];
+            if (v <= 4) v++;
+            else if (v == 5) v = 10;
+            else if (v >= 10 && v <= 90 && v % 10 == 0) v += 10;
+            else if (v == 100) v = 0;
+            x[0x51C] = v;
+            break;
+        }
+        case 8: g_game.gameStyleModded = !g_game.gameStyleModded; break;   /* extra do port */
+        case 9: svcX2GameOptionReset(); break;
+        case 10: GameOption_Save(); g_svcPage = 0; break;   /* 0x8069EF6 */
+        case 11: g_svcPage = 0; break;
+        default: break;
+        }
+    }
 }
 
 /* ------------------------------------------ GRAPHICS SETTINGS (extra do port)
@@ -669,6 +1001,58 @@ static void svcRenderButtonConfig(void)
     }
 }
 
+/* ---------------------------------- COIN OPTION (arcade 0x8068AB2)
+ * 7F2 COIN1 (0 = FREE PLAY, 0..10), 7F3 COIN2 (1..10), 7EB CREDIT LIMIT (0 = OFF, 0..9). */
+static const char* SVC_X2_COINOPT_ITEMS[6] = {
+    "COIN1 SETTING", "COIN2 SETTING", "CREDIT LIMIT", "DEFAULT SETTING", "SAVE AND EXIT", "EXIT"
+};
+
+static void svcRenderCoinOption(void)
+{
+    char buf[64];
+    int i;
+    uint32_t hit = svcBitsHit();
+    uint8_t* x = Eeprom2_Data();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "COIN OPTION");
+
+    for (i = 0; i < 6; i++) {
+        float y = (float)(352 - i * 20);
+        svcColorFor(i, g_svcCursor);
+        svcText(196.0f, y, SVC_X2_COINOPT_ITEMS[i]);
+        if (i == 0) {
+            if (g_game.svcCoin1 == 0) svcText(404.0f, 352.0f, "FREE PLAY");
+            else { sprintf(buf, "1 CREDIT(S) / %d COIN", g_game.svcCoin1); svcText(404.0f, 352.0f, buf); }
+        } else if (i == 1) {
+            if (g_game.svcCoin2 == 0) svcText(404.0f, 332.0f, "FREE PLAY");
+            else { sprintf(buf, "%d CREDIT(S) / 1 COIN", g_game.svcCoin2); svcText(404.0f, 332.0f, buf); }
+        } else if (i == 2) {
+            if (x[0x7EB] == 0) svcText(404.0f, 312.0f, "OFF");
+            else { sprintf(buf, "%d CREDIT(S)", x[0x7EB]); svcText(404.0f, 312.0f, buf); }
+        }
+    }
+
+    if (hit & SVC_BIT_TEST) {
+        g_svcCursor++;
+        if (g_svcCursor > 5) g_svcCursor = 0;
+    }
+    if (hit & SVC_BIT_SERVICE) {
+        switch (g_svcCursor) {          /* tabela 0x807D604 */
+        case 0: if (++g_game.svcCoin1 > 10) g_game.svcCoin1 = 0; break;
+        case 1: if (++g_game.svcCoin2 > 10) g_game.svcCoin2 = 1; break;
+        case 2: if (++x[0x7EB] > 9) x[0x7EB] = 0; break;
+        case 3:   /* 0x8069D8C */
+            g_game.svcCoin1 = 5; g_game.svcCoin2 = 1; x[0x7EB] = 0;
+            break;
+        case 4: GameOption_Save(); g_svcPage = 0; break;
+        case 5: g_svcPage = 0; break;
+        default: break;
+        }
+    }
+}
+
+#if 0  /* Prex3 (PUMPY.EXE 0x00405d80) — substituída pela do arcade acima */
 /* ---------------------------------- ServiceMenu_RenderCoinOption 0x00405d80 */
 static const char* SVC_COINOPT_ITEMS[5] = {
     "COIN1 SETTING", "COIN2 SETTING", "DEFAULT SETTING", "SAVE AND EXIT", "EXIT"
@@ -734,7 +1118,67 @@ static void svcRenderCoinOption(void)
         }
     }
 }
+#endif
 
+/* ----------------------------------- SOUND TEST (arcade 0x8068D3E)
+ * AUDIO: avança a música [+0x38] e toca AUDIO\%X.AUD depois de 60 quadros
+ * parado no item (0x8068EBD -> 0x8068CD2). EFFECT SOUND: 0..0x39 (0x8068D12).
+ * TEST/SERVICE comparados por igualdade, como no original. */
+static const char* SVC_X2_SOUND_ITEMS[3] = { "AUDIO", "EFFECT SOUND", "EXIT" };   /* 0x808D3DC */
+
+static void svcRenderSoundTest(void)
+{
+    char buf[64];
+    int i;
+    uint32_t hit = svcBitsHit();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "SOUND TEST");
+
+    for (i = 0; i < 3; i++) {
+        svcColorFor(i, g_svcCursor);
+        svcText(180.0f, (float)(352 - i * 20), SVC_X2_SOUND_ITEMS[i]);
+        if (i == 0) {
+            if (g_svcAudioIdx < 0) svcText(372.0f, 352.0f, "#--");
+            else { sprintf(buf, "#%02d", g_svcAudioIdx); svcText(372.0f, 352.0f, buf); }
+        } else if (i == 1) {
+            if (g_svcSeIdx < 0) svcText(372.0f, 332.0f, "#--");
+            else { sprintf(buf, "#%02d", g_svcSeIdx); svcText(372.0f, 332.0f, buf); }
+        }
+    }
+
+    if (hit == SVC_BIT_TEST) {
+        g_svcSndTimer = 0;
+        BGM_Stop();
+        g_svcCursor++;
+        if (g_svcCursor > 2) g_svcCursor = 0;
+    }
+    if (hit == SVC_BIT_SERVICE) {
+        if (g_svcCursor == 0) {
+            g_svcAudioIdx++;
+            if (g_svcAudioIdx >= EX_SONG_COUNT) g_svcAudioIdx = 0;
+            g_svcSndTimer = 0;
+        } else if (g_svcCursor == 1) {
+            g_svcSeIdx++;
+            if (g_svcSeIdx > 0x39) g_svcSeIdx = 0;
+            BLua_PlayEffect(g_svcSeIdx);   /* EFFECT(n): só os do battle têm WAV mapeado */
+        } else if (g_svcCursor == 2) {
+            BGM_Stop();
+            g_svcPage = 0;
+        }
+    }
+
+    if (g_svcCursor == 0 && g_svcSndTimer == 60 && g_svcAudioIdx >= 0) {
+        BGM_Stop();
+        char path[MAX_PATH];   /* AUDIO\%X.AUD (0x807D088) */
+        snprintf(path, sizeof(path), "%s/AUDIO/%s.AUD", g_game.currentDirectory,
+                 Song_IdStr((int)g_exSongs[g_svcAudioIdx].id));
+        if (BGM_LoadAUDDirect(path)) BGM_Play(false);
+    }
+    g_svcSndTimer++;
+}
+
+#if 0  /* Prex3 (PUMPY.EXE 0x00406030) — substituída pela do arcade acima */
 /* ----------------------------------- ServiceMenu_RenderSoundTest 0x00406030
  * Item 0 toca AUDIO/%03d.AUD, item 1 percorre 35 efeitos (0..0x22), item 2 sai.
  * O original compara g_dwInputBits por igualdade exata, não por máscara.
@@ -794,6 +1238,8 @@ static void svcRenderSoundTest(void)
     }
 }
 
+/* Prex3 (cont.): BOOKKEEPING / CLEAR BOOKKEEPING / STATISTICS — substituídas
+ * pelas do arcade depois deste bloco */
 /* --------------------------------- ServiceMenu_RenderBookkeeping 0x00406360 */
 static const char* SVC_BOOK_ITEMS[2] = { "RESET", "EXIT" };
 
@@ -910,6 +1356,186 @@ static void svcRenderStatistics(void)
         g_svcPage = 0;
     }
 }
+#endif
+
+static const char* SVC_YESNO[2] = { "YES", "NO" };   /* 0x808D3F4 / 0x808D404 */
+
+/* --------------------------------- BOOKKEEPING (arcade 0x8069160)
+ * SERVICE/COIN 1/COIN 2 (7FC/7F4/7F8) e TICKET 1/2 (u32 em +0x51D/+0x521 no
+ * arcade). No PC não há dispenser e esses bytes do PIUEXCEED2.INI são usados
+ * pelo PIU32 (+0x520..+0x526), então os tickets aparecem como 0. */
+static const char* SVC_X2_BOOK_ITEMS[3] = { "RESET BOOKEEPING", "RESET RANKING", "EXIT" };  /* 0x808D414 */
+
+static void svcRenderBookkeeping(void)
+{
+    char buf[64];
+    int i;
+    uint32_t hit = svcBitsHit();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "BOOKKEEPING MENU");
+
+    sprintf(buf, "SERVICE : %d", g_game.svcServiceTotal); svcText(180.0f, 352.0f, buf);
+    sprintf(buf, "COIN 1  : %d", g_game.svcCoin1Total);   svcText(180.0f, 332.0f, buf);
+    sprintf(buf, "COIN 2  : %d", g_game.svcCoin2Total);   svcText(180.0f, 312.0f, buf);
+    svcText(180.0f, 272.0f, "TICKET 1 : 0");
+    svcText(180.0f, 252.0f, "TICKET 2 : 0");
+
+    for (i = 0; i < 3; i++) {
+        svcColorFor(i, g_svcCursor);
+        svcText(180.0f, (float)(224 - i * 20), SVC_X2_BOOK_ITEMS[i]);
+    }
+
+    if (hit == SVC_BIT_TEST) {
+        g_svcCursor++;
+        if (g_svcCursor > 2) g_svcCursor = 0;
+    } else if (hit == SVC_BIT_SERVICE) {
+        if (g_svcCursor == 0)      { g_svcPage = 10; g_svcSubCursor = 1; }   /* começa em NO */
+        else if (g_svcCursor == 1) { g_svcPage = SVC_PAGE_CLEAR_RANKING; g_svcSubCursor = 1; }
+        else                       g_svcPage = 0;
+    }
+}
+
+/* ---------------------------- CLEAR BOOKKEEPING (arcade 0x8069044) */
+static void svcRenderClearBookkeeping(void)
+{
+    int i;
+    uint32_t hit = svcBitsHit();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "BOOKKEEPING MENU");
+    svcText(196.0f, 352.0f, "CLEAR BOOKKEEPING DATA ?");
+
+    for (i = 0; i < 2; i++) {
+        svcColorFor(i, g_svcSubCursor);
+        svcText((float)(228 + i * 96), 312.0f, SVC_YESNO[i]);
+    }
+
+    if (hit == SVC_BIT_TEST) {
+        g_svcSubCursor++;
+        if (g_svcSubCursor > 1) g_svcSubCursor = 0;
+    } else if (hit == SVC_BIT_SERVICE) {
+        if (g_svcSubCursor == 0) {
+            /* zera 7F4/7F8/7FC (e os tickets no arcade). O arcade só grava a
+             * EEPROM depois; aqui grava na hora para não perder no fechamento. */
+            g_game.svcServiceTotal = 0;
+            g_game.svcCoin1Total   = 0;
+            g_game.svcCoin2Total   = 0;
+            Eeprom_Save();
+            Log_Print("ServiceMenu: bookkeeping zerado\n");
+        }
+        g_svcPage = 7;   /* [+0x20] = 6 no arcade; o cursor [+0x10] fica */
+    }
+}
+
+/* ---------------------------- CLEAR HIGHSCORE RANKING (arcade 0x8068F54) */
+static void svcRenderClearRanking(void)
+{
+    int i;
+    uint32_t hit = svcBitsHit();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "CLEAR HIGHSCORE RANKING");
+    svcText(196.0f, 352.0f, "CLEAR HIGHSCORE RANKING DATA ?");
+
+    for (i = 0; i < 2; i++) {
+        svcColorFor(i, g_svcSubCursor);
+        svcText((float)(228 + i * 96), 312.0f, SVC_YESNO[i]);
+    }
+
+    if (hit == SVC_BIT_TEST) {
+        g_svcSubCursor++;
+        if (g_svcSubCursor > 1) g_svcSubCursor = 0;
+    } else if (hit == SVC_BIT_SERVICE) {
+        if (g_svcSubCursor == 0) {
+            Eeprom2_ResetRanking();   /* 0x8069BBC */
+            Eeprom2_Save();
+            Log_Print("ServiceMenu: ranking zerado\n");
+        }
+        g_svcPage = 7;
+    }
+}
+
+/* ----------------------------------- STATISTICS (arcade 0x80692EA)
+ * Músicas ordenadas por número de jogos (0x8068ED8), 30 por página em duas
+ * colunas (x = 16 e 336). As 10 primeiras da página 0 vão de vermelho a branco. */
+static void svcRenderStatistics(void)
+{
+    char buf[96];
+    int i, total = EX_SONG_COUNT;
+    int base = g_svcCursor * 30;
+    uint32_t hit = svcBitsHit();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "STATISTICS MENU");
+
+    for (i = base; i < base + 15 && i < total; i++) {
+        float f = (i <= 9) ? (float)i / 10.0f : 1.0f;
+        int s = g_svcStatOrder[i];
+        glColor3f(1.0f, f, f);
+        sprintf(buf, "%03d. %-24s [%04d]", i + 1, svcSongName(s), svcPlayCount(s));
+        svcText(16.0f, (float)(352 - (i - base) * 20), buf);
+    }
+    for (i = base + 15; i < base + 30 && i < total; i++) {
+        int s = g_svcStatOrder[i];
+        sprintf(buf, "%03d. %-24s [%04d]", i + 1, svcSongName(s), svcPlayCount(s));
+        svcText(336.0f, (float)(352 - (i - base - 15) * 20), buf);
+    }
+
+    if (hit == SVC_BIT_TEST) {
+        int pages = total / 30 + ((total % 30) ? 1 : 0);
+        g_svcCursor++;
+        if (g_svcCursor >= pages) g_svcCursor = 0;
+    }
+    if (hit == SVC_BIT_SERVICE) g_svcPage = 0;
+}
+
+/* ----------------------------------- RESTRICTION (arcade 0x80694DE)
+ * Lista as músicas (janela de 9 linhas centrada no cursor) com +0x52B+i:
+ * 0 = ENABLED, 1 = DISABLED. Depois das músicas: REVERT TO DEFAULT, SAVE AND
+ * EXIT, EXIT. Os dois CENTER juntos levam o cursor ao primeiro desses itens. */
+static const char* SVC_X2_RESTR_ITEMS[3] = { "REVERT TO DEFAULT", "SAVE AND EXIT", "EXIT" };   /* 0x807D61C */
+
+static void svcRenderRestriction(void)
+{
+    char buf[96];
+    int i, n = EX_SONG_COUNT;
+    uint32_t hit = svcBitsHit();
+    uint8_t* x = Eeprom2_Data();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "RESTRICTION");
+
+    int top = g_svcCursor - 4;
+    if (top > n - 9) top = n - 9;
+    if (top < 0) top = 0;
+    for (i = 0; i <= 8 && top + i < n; i++) {
+        int s = top + i;
+        svcColorFor(s, g_svcCursor);
+        sprintf(buf, "%03d. %-26s [%s]", s + 1, svcSongName(s),
+                x[0x52B + s] ? "DISABLED" : "ENABLED");
+        svcText(116.0f, (float)(352 - i * 20), buf);
+    }
+    for (i = 0; i < 3; i++) {
+        svcColorFor(n + i, g_svcCursor);
+        svcText(196.0f, (float)(152 - i * 20), SVC_X2_RESTR_ITEMS[i]);
+    }
+
+    /* 0x806967F: P1 e P2 CENTER (0x404) seguros */
+    if (Input_IsPadDown(0, PAD_C) && Input_IsPadDown(1, PAD_C)) g_svcCursor = n;
+
+    if (hit & SVC_BIT_TEST) {
+        g_svcCursor++;
+        if (g_svcCursor >= n + 3) g_svcCursor = 0;
+    }
+    if (hit & SVC_BIT_SERVICE) {
+        if (g_svcCursor < n)            x[0x52B + g_svcCursor] ^= 1;
+        else if (g_svcCursor == n)      memset(&x[0x52B], 0, 256);    /* 0x8062EC8 */
+        else if (g_svcCursor == n + 1)  { Eeprom2_Save(); g_svcPage = 0; }
+        else                            g_svcPage = 0;
+        /* 0x8062EDA aplica na tabela de músicas; aqui Eeprom2_SongOff lê direto */
+    }
+}
 
 /* ============================================================== interface ==*/
 
@@ -1011,6 +1637,8 @@ void ServiceMenu_UpdateRender(void)
     case 10: svcRenderClearBookkeeping(); svcRenderFooter(); break;
     case SVC_PAGE_GRAPHICS:      svcRenderGraphics();      svcRenderFooter(); break;
     case SVC_PAGE_BUTTON_CONFIG: svcRenderButtonConfig();  svcRenderFooter(); break;
+    case SVC_PAGE_RESTRICTION:   svcRenderRestriction();   svcRenderFooter(); break;
+    case SVC_PAGE_CLEAR_RANKING: svcRenderClearRanking();  svcRenderFooter(); break;
     default: svcRenderFooter(); break;
     }
 }

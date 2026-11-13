@@ -125,11 +125,23 @@ void BLua_PlayEffect(int n) {
         g_effInit = 1;
     }
     if (n < 0 || n >= 64) return;
+    /* arcade piu: tabela 0x807F28C (58 nomes, "WAVE/%s.WAV", carga 0x807498C).
+     * era: só 18..36 (B01..B19) mapeados. */
+    static const char *const k_eff[58] = {
+        "COIN1", "COIN2", "PUSHPANEL", "START", "GAMESTOP", "8-1", "9-5", "NEXTSTAGE",
+        "CHGMOD", "2-1", "3-2", "TIME_LIMIT", "10-2", "RANK_A", "RANK_B", "RANK_C",
+        "RANK_D", "RANK_F", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08",
+        "B09", "B10", "B11", "B12", "B13", "B14", "B15", "B16", "B17", "B18", "B19",
+        "SELECTED", "GAMEOVER", "STATIONSELECT", "ARCADESTATION", "BATTLESTATION",
+        "REMIXSTATION", "BANYA", "KPOP", "POP", "NORMAL", "HARD", "CRAZY", "FREESTYLE",
+        "NIGHTMARE", "BATTLE", "SELECTASONG", "SELECTAGAME", "TRYNEXT", "TRYBONUS",
+        "ENTERNAME", "INTERNET"
+    };
     if (g_effWave[n] == -2) {
         g_effWave[n] = -1;
-        if (n >= 18 && n <= 36) {
+        if (n < 58) {
             char nm[32];
-            snprintf(nm, sizeof(nm), "B%02d.WAV", n - 17);
+            snprintf(nm, sizeof(nm), "%s.WAV", k_eff[n]);
             g_effWave[n] = Audio_LoadWaveFile(nm);
         } else {
             Log_Print("BLUA: EFFECT %d sem WAV mapeado\n", n);

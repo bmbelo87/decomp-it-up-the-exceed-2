@@ -123,6 +123,14 @@ static int calcGrade(int perfect, int great, int good, int bad, int miss, int ma
  *   C >= 0.85, D >= 0.75, senão F.
  * A razão de cada estágio fica em [+0x174 + estágio*4] (0x40CD72). */
 static float g_exStageRatio[2][4];
+/* arcade `piu` 0x8060EB8..0x8060ED3: MISS ([+0x1C0 + 4*estagio]) e modo do estagio
+ * ([0x80BECEC + 4*estagio] & 0x200 = Crazy) usados pela condicao da RAW (001). */
+static unsigned g_exStageMiss[2][4];
+static bool     g_exStageCrazy[4];
+/* arcade `piu` 0x806307E (secretas da Select): GREAT ([+0x190 + 4*estagio]) e a musica de
+ * cada estagio ([0x80BECDC + 4*estagio]) */
+static unsigned g_exStageGreat[2][4];
+static int      g_exStageSongId[4];
 
 static float exRatio(int p) {
     unsigned miss = g_game.stats.missCount[p];
@@ -161,6 +169,14 @@ static GameState exNextState(void) {
      * 0 vai direto para GAMEOVER — uma música por partida. (O caso EEPROM
      * +0x7EC == 1 -> IDLE, testado antes, não foi portado: flag não identificada.) */
     if (g_exStation == 2) return STATE_GAMEOVER_ENTER;
+    /* arcade `piu` 0x8060E3A..0x8060E6A / 0x8060FED: o REMIX toca duas musicas - estagio 0
+     * vai para NEXTSTAGE 1; no estagio 1 so a RAW (Result_ExRawDue, tratada em
+     * Result_Update antes de chegar aqui) estende a partida; senao GAMEOVER. Depois
+     * da RAW (estagio 2) 0x8060F5D tambem vai para GAMEOVER. */
+    if (g_exStation == 1) {
+        if (st == 0) { g_game.bonusStage = true; return STATE_STAGE_TRANSITION; }
+        return STATE_GAMEOVER_ENTER;
+    }
     if (st == 0 || st == 1) {                                    /* NEXTSTAGE 1 / 2 */
         g_game.bonusStage = true;
         return STATE_STAGE_TRANSITION;
@@ -181,6 +197,31 @@ static GameState exNextState(void) {
      * return STATE_GAMEOVER_ENTER; */
     return STATE_NAMEINPUT;
 }
+
+/* RAW - Exceed 2 Opening (001). Arcade `piu` 0x8060E79..0x8060F2C: REMIX, estagio 1 e,
+ * para algum jogador ativo (OR): razao >= 1.0 nos estagios 0 e 1, MISS == 0 nos dois
+ * e modo Crazy (0x200) nos dois. Chamada uma vez, na transicao do grade. */
+bool Result_ExRawDue(void) {
+    if (!g_exceedSongIds || g_exStation != 1 || exStageIdx() != 1) return false;
+    if (!g_exStageCrazy[0] || !g_exStageCrazy[1]) return false;
+    for (int p = 0; p < 2; p++) {
+        if (!(g_game.activePlayerMask & (1 << p))) continue;
+        if (g_exStageRatio[p][0] >= 1.0f && g_exStageRatio[p][1] >= 1.0f &&
+            g_exStageMiss[p][0] == 0 && g_exStageMiss[p][1] == 0) {
+            Log_Print("RAW: condicao ok (P%d razao %.3f/%.3f, 0 MISS, Crazy x2)\n", p + 1,
+                      g_exStageRatio[p][0], g_exStageRatio[p][1]);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Dados por estagio para as secretas da Select (piu 0x806307E, exceed_select.c) */
+int      Result_ExStageSong(int st)            { return (st >= 0 && st < 4) ? g_exStageSongId[st] : 0; }
+bool     Result_ExStageCrazy(int st)           { return (st >= 0 && st < 4) && g_exStageCrazy[st]; }
+float    Result_ExStageRatio(int p, int st)    { return (st >= 0 && st < 4 && (p & ~1) == 0) ? g_exStageRatio[p][st] : 0.0f; }
+unsigned Result_ExStageMiss(int p, int st)    { return (st >= 0 && st < 4 && (p & ~1) == 0) ? g_exStageMiss[p][st] : 0u; }
+unsigned Result_ExStageGreat(int p, int st)   { return (st >= 0 && st < 4 && (p & ~1) == 0) ? g_exStageGreat[p][st] : 0u; }
 
 // Decide proximo estado baseado nas grades e contagem de stages
 GameState Result_GetNextState(void) {
@@ -397,12 +438,25 @@ void Result_Enter(void) {
     if (g_exceedSongIds) {
         Gameplay_ExScoreSync();
         int st = exStageIdx();
-        if (st == 0) memset(g_exStageRatio, 0, sizeof(g_exStageRatio));
+        if (st == 0) {
+            memset(g_exStageRatio, 0, sizeof(g_exStageRatio));
+            memset(g_exStageMiss, 0, sizeof(g_exStageMiss));
+            memset(g_exStageCrazy, 0, sizeof(g_exStageCrazy));
+            memset(g_exStageGreat, 0, sizeof(g_exStageGreat));
+            memset(g_exStageSongId, 0, sizeof(g_exStageSongId));
+        }
+        if (st >= 0 && st < 4 && g_game.selectedSongIndex >= 0 && g_game.selectedSongIndex < EX_SONG_COUNT)
+            g_exStageSongId[st] = (int)g_exSongs[g_game.selectedSongIndex].id;
+        if (st >= 0 && st < 4 && g_game.selectedModeIndex >= 0 &&
+            g_game.selectedModeIndex < g_game.songDB.modeCount)
+            g_exStageCrazy[st] = strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "CRAZY") == 0;
         /* IR: TOTAL_SCORE e m_PlayOrder[estágio] = índice em g_exSongs (src/ir.c) */
         IR_RecordStage(st, g_game.selectedSongIndex, g_game.stats.score);
         for (int p = 0; p < 2; p++) {
             float r = exRatio(p);
             g_exStageRatio[p][st] = r;
+            g_exStageMiss[p][st] = g_game.stats.missCount[p];
+            g_exStageGreat[p][st] = g_game.stats.greatCount[p];
             if (p == 0) g_gradeP1 = exGradeOf(r, g_game.stats.missCount[0]);
             else        g_gradeP2 = exGradeOf(r, g_game.stats.missCount[1]);
         }
@@ -425,6 +479,13 @@ void Result_Update(float dt) {
         if (g_game.state != STATE_DANCE_GRADE_DISPLAY) return;
         exGradeSounds(g_exT);
         if (g_exT > 0x168) {                     /* 0x40D0E7 */
+            if (Result_ExRawDue()) {             /* piu 0x8060F3F: "RUN 001 -d", sem NEXTSTAGE */
+                Movie_Close();
+                BGM_Stop();
+                Resource_ClearBGA();
+                ExSelect_RunRaw();
+                return;
+            }
             GameState ns = Result_GetNextState();
             Movie_Close();                       /* End 0x40B64B */
             BGM_Stop();
