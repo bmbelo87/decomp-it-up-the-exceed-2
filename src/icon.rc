@@ -1,2 +1,37 @@
 /* Ícone do executável (gerado de icon.png) */
 1 ICON "icon.ico"
+
+/* Informações de versão (Propriedades > Detalhes do arquivo). Executáveis sem
+ * VERSIONINFO e sem assinatura são marcados com mais frequência por detecções
+ * heurísticas/ML dos antivírus. */
+#include <winver.h>
+#include "recomp_version.h"   /* RECOMP_VERSION / RECOMP_VERSION_RC (gerado a cada build) */
+
+1 VERSIONINFO
+FILEVERSION     RECOMP_VERSION_RC
+PRODUCTVERSION  RECOMP_VERSION_RC
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041604b0"
+        BEGIN
+            VALUE "CompanyName",      "decomp-it-up (github.com/bmbelo87)"
+            VALUE "FileDescription",  "decomp-it-up-Exceed2 - Pump It Up Exceed 2 reconstruction"
+            VALUE "FileVersion",      RECOMP_VERSION
+            VALUE "InternalName",     "Pumpy"
+            VALUE "LegalCopyright",   "Open source reconstruction for educational purposes. Not affiliated with Andamiro Co., Ltd."
+            VALUE "OriginalFilename", "Pumpy.exe"
+            VALUE "ProductName",      "decomp-it-up-Exceed2"
+            VALUE "ProductVersion",   RECOMP_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0416, 1200
+    END
+END

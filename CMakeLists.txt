@@ -184,6 +184,27 @@ add_executable(Pumpy
 
 target_include_directories(Pumpy PRIVATE include)
 
+# Versão do projeto (RECOMP_VERSION): cada commit soma 1 no último número.
+# Série atual: 0.4.x. Para abrir a próxima série (ex.: 0.5): RECOMP_MAJOR_MINOR "0.5",
+# RECOMP_PATCH_BASE -1 e RECOMP_BASE_COMMIT = último commit da série anterior; o commit
+# dessa troca vira o .0 (ver cmake/recomp_version.cmake).
+# 0.4: base = 74e6529 (secretas da Select e B58); o commit que abre a série vira 0.4.0.
+set(RECOMP_MAJOR_MINOR "0.4")
+set(RECOMP_PATCH_BASE -1)
+set(RECOMP_BASE_COMMIT "74e6529")
+set(RECOMP_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_custom_target(recomp_version ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${RECOMP_GEN_DIR}
+        -DMAJOR_MINOR=${RECOMP_MAJOR_MINOR} -DPATCH_BASE=${RECOMP_PATCH_BASE}
+        -DBASE_COMMIT=${RECOMP_BASE_COMMIT}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/recomp_version.cmake
+    BYPRODUCTS ${RECOMP_GEN_DIR}/recomp_version.h
+    COMMENT "Versao do projeto (RECOMP_VERSION)"
+    VERBATIM)
+add_dependencies(Pumpy recomp_version)
+target_include_directories(Pumpy PRIVATE ${RECOMP_GEN_DIR})
+
 target_compile_definitions(Pumpy PRIVATE
     _CRT_SECURE_NO_WARNINGS
     SDL_MAIN_HANDLED          # main() próprio, sem SDL2main (ver window.c: SDL_SetMainReady)

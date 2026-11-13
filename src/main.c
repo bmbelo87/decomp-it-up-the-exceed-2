@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "recomp_version.h"   /* RECOMP_VERSION (gerado) */
 #include "testbga.h"
 #include "movie.h"
 #include "vsl.h"
@@ -12,6 +13,7 @@ extern bool Window_ProcessMessages(void);
 static void InitSystems(void) {
     Log_Print("=== PUMP IT UP v%s (%s %s) ===\n",
               GAME_VERSION, GAME_BUILD_DATE, GAME_BUILD_TIME);
+    Log_Print("Build: RECOMP-%s\n", RECOMP_VERSION);   /* versao do projeto, para conferir em logs */
 
     timeBeginPeriod(1);
 
