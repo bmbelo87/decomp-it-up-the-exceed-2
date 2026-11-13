@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include <ctype.h>   /* toupper (gcc/Linux: declaracao implicita e erro) */
 #include "zlibinflate.h"
 
 #ifndef Z_OK
